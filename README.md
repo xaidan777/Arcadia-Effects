@@ -1,4 +1,4 @@
-# Arcaidia Effector
+# Arcadia Effector
 
 **Standalone 2D particle effect editor built for humans and LLMs.**
 
