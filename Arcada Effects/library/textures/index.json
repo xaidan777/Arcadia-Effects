@@ -1,0 +1,91 @@
+{
+  "app": "arcadia-effects",
+  "kind": "texture-collect",
+  "note": "Extracted copies of the textures embedded in library/*.json. The effect files stay self-contained.",
+  "textures": [
+    {
+      "file": "capacitor_atlas.png",
+      "id": "tex_mta58wde_94i",
+      "name": "capacitor_atlas",
+      "mime": "image/png",
+      "bytes": 1071715,
+      "sheet": {
+        "cols": 3,
+        "rows": 3,
+        "fps": 15
+      },
+      "referenced": true,
+      "usedBy": [
+        "Capacitor.json"
+      ]
+    },
+    {
+      "file": "cond_atlas.webp",
+      "id": "tex_mta55723_94d",
+      "name": "cond_atlas",
+      "mime": "image/webp",
+      "bytes": 170438,
+      "sheet": {
+        "cols": 3,
+        "rows": 3,
+        "fps": 15
+      },
+      "referenced": false,
+      "usedBy": [
+        "Capacitor.json"
+      ]
+    },
+    {
+      "file": "cond_light.png",
+      "id": "tex_mta5clmn_94l",
+      "name": "cond_light",
+      "mime": "image/png",
+      "bytes": 17678,
+      "sheet": null,
+      "referenced": true,
+      "usedBy": [
+        "Capacitor.json"
+      ]
+    },
+    {
+      "file": "freeze_aoe_2.webp",
+      "id": "tex_mta9z8yz_1b5j",
+      "name": "freeze_aoe_2",
+      "mime": "image/webp",
+      "bytes": 37112,
+      "sheet": null,
+      "referenced": true,
+      "usedBy": [
+        "Poison.json"
+      ]
+    },
+    {
+      "file": "poison_fx.webp",
+      "id": "tex_mtaagn6e_1ci",
+      "name": "poison_fx",
+      "mime": "image/webp",
+      "bytes": 22060,
+      "sheet": {
+        "cols": 4,
+        "rows": 2,
+        "fps": 15
+      },
+      "referenced": true,
+      "usedBy": [
+        "Poison.json"
+      ]
+    },
+    {
+      "file": "repulse_wave.webp",
+      "id": "tex_mta5i0h9_94x",
+      "name": "repulse_wave",
+      "mime": "image/webp",
+      "bytes": 30064,
+      "sheet": null,
+      "referenced": true,
+      "usedBy": [
+        "Capacitor.json"
+      ]
+    }
+  ]
+}

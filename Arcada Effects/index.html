@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arcaidia Effector</title>
+<!-- ВЕРСИЯ РЕДАКТОРА: единственный источник правды, правится РУКАМИ здесь.
+     Читается в js/core/utils.js как AFX.VERSION (топбар + окно справки). -->
+<meta name="afx-version" content="1.0.0">
+<link rel="stylesheet" href="css/editor.css">
+</head>
+<body>
+<div id="app">
+    <header id="topbar">
+        <div class="logo">ARCAIDIA <span>EFFECTOR</span></div>
+        <span id="app-ver" class="app-ver"></span>
+        <input id="fx-name" class="fx-name" type="text" spellcheck="false">
+        <div class="topbar-btns">
+            <button id="btn-undo" class="tb"></button>
+            <button id="btn-redo" class="tb"></button>
+            <button id="btn-save" class="tb accent"></button>
+            <span class="tb-sep"></span>
+            <button id="btn-png" class="tb"></button>
+            <button id="btn-seq" class="tb"></button>
+        </div>
+        <div id="save-status" class="save-status"></div>
+        <button id="btn-help" class="tr-btn" style="flex:0 0 auto;"></button>
+        <button id="btn-settings" class="tr-btn" style="flex:0 0 auto;"></button>
+    </header>
+
+    <div id="main">
+        <div id="left-col" class="col">
+            <div id="panel-globals" class="panel">
+                <div class="panel-title" id="globals-title">Global Settings</div>
+                <div class="panel-body" id="globals-body"></div>
+            </div>
+            <div class="h-split" data-split="left"></div>
+            <div id="panel-catalog" class="panel">
+                <div class="panel-title"><span id="catalog-title">Effects Catalog</span>
+                    <span class="panel-title-btns" id="catalog-btns"></span>
+                </div>
+                <div class="panel-body" id="catalog-body"></div>
+            </div>
+        </div>
+        <div class="v-split" data-split="lw"></div>
+
+        <div id="center-col" class="col">
+            <div id="preview-toolbar"></div>
+            <div id="preview-area">
+                <canvas id="view-canvas"></canvas>
+                <div id="preview-hud"></div>
+            </div>
+        </div>
+
+        <div class="v-split" data-split="rw"></div>
+        <div id="right-col" class="col">
+            <div id="panel-textures" class="panel">
+                <div class="panel-title"><span id="textures-title">Textures</span>
+                    <span class="panel-title-btns" id="textures-btns"></span>
+                </div>
+                <div class="panel-body" id="textures-body"></div>
+            </div>
+            <div class="h-split" data-split="right"></div>
+            <div id="panel-inspector" class="panel">
+                <div class="panel-title" id="inspector-title">Inspector</div>
+                <div class="panel-body" id="inspector-body"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="h-split" data-split="tl"></div>
+    <div id="timeline"></div>
+</div>
+
+<script src="js/core/utils.js"></script>
+<script src="js/core/i18n.js"></script>
+<script src="js/core/track.js"></script>
+<script src="js/core/curve.js"></script>
+<script src="js/core/path.js"></script>
+<script src="js/core/sprites.js"></script>
+<script src="js/core/model.js"></script>
+<script src="js/core/sim.js"></script>
+<script src="js/core/engine.js"></script>
+<script src="js/core/atlas.js"></script>
+<script src="js/core/zip.js"></script>
+<script src="js/core/fxpresets.js"></script>
+<script src="js/ui/dom.js"></script>
+<script src="js/ui/widgets.js"></script>
+<script src="js/ui/ops.js"></script>
+<script src="js/ui/textures.js"></script>
+<script src="js/ui/inspector.js"></script>
+<script src="js/ui/globalspanel.js"></script>
+<script src="js/ui/catalog.js"></script>
+<script src="js/ui/preview.js"></script>
+<script src="js/ui/timeline.js"></script>
+<script src="js/ui/app.js"></script>
+</body>
+</html>
