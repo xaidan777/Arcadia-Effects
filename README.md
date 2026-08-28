@@ -61,7 +61,7 @@ Preview and adjust
         ↓
 Export sprite atlas
         ↓
-Use in game
+Use in gamee
 ```
 
 Effects are stored as readable JSON rather than a proprietary binary format.
