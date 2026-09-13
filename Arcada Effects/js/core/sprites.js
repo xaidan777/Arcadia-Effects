@@ -189,20 +189,26 @@ const drawers = {
     }
 };
 
+// label и tip — английские строки UI (перевод в i18n.js: label — RU, tip — TIPS, 30–120 символов)
 S.shapeDefs = [
-    { id: 'soft',   label: 'Soft Circle' },
-    { id: 'dot',    label: 'Circle' },
-    { id: 'ring',   label: 'Ring', params: [{ k: 'th', label: 'Thickness', min: 0.02, max: 0.9, step: 0.01, def: 0.14 }] },
-    { id: 'square', label: 'Square' },
-    { id: 'poly',   label: 'Polygon', params: [{ k: 'n', label: 'Sides', min: 3, max: 16, step: 1, def: 6 }] },
-    { id: 'star',   label: 'Star', params: [{ k: 'n', label: 'Points', min: 3, max: 12, step: 1, def: 5 }, { k: 'inr', label: 'Inner radius', min: 0.05, max: 0.95, step: 0.01, def: 0.5 }] },
-    { id: 'streak', label: 'Streak' },
-    { id: 'spark',  label: 'Spark' },
-    { id: 'flame',  label: 'Flame Tongue', variants: 4, params: [{ k: 'taper', label: 'Taper', min: 0.1, max: 1, step: 0.02, def: 0.55 }] },
-    { id: 'ember',  label: 'Ember' },
-    { id: 'smoke',  label: 'Smoke Puff', variants: 4 },
-    { id: 'blob',   label: 'Cartoon Puff', variants: 4 },
-    { id: 'shard',  label: 'Shard', variants: 4 }
+    { id: 'soft',   label: 'Soft Circle', tip: 'Round blob with a soft falloff — glows, smoke, energy' },
+    { id: 'dot',    label: 'Circle', tip: 'Solid disc with a crisp edge — droplets, dots, bubbles' },
+    { id: 'ring',   label: 'Ring', tip: 'Hollow ring with adjustable thickness — shockwaves and pulses',
+        params: [{ k: 'th', label: 'Thickness', tip: 'Ring band thickness as a fraction of its radius', min: 0.02, max: 0.9, step: 0.01, def: 0.14 }] },
+    { id: 'square', label: 'Square', tip: 'Solid square — pixels, confetti and digital bits' },
+    { id: 'poly',   label: 'Polygon', tip: 'Regular polygon with an adjustable number of sides',
+        params: [{ k: 'n', label: 'Sides', tip: 'How many sides the polygon shape has', min: 3, max: 16, step: 1, def: 6 }] },
+    { id: 'star',   label: 'Star', tip: 'Star with adjustable points and depth — magic and sparkles',
+        params: [{ k: 'n', label: 'Points', tip: 'How many points (rays) the star shape has', min: 3, max: 12, step: 1, def: 5 },
+            { k: 'inr', label: 'Inner radius', tip: 'Star depth: inner radius as a fraction of the outer one', min: 0.05, max: 0.95, step: 0.01, def: 0.5 }] },
+    { id: 'streak', label: 'Streak', tip: 'Long soft streak along X — pair it with Align to velocity or Stretch' },
+    { id: 'spark',  label: 'Spark', tip: 'Four-point glint with a bright core — twinkles and hit sparks' },
+    { id: 'flame',  label: 'Flame Tongue', tip: 'Flame tongue with its tip along +X, 4 variants — use with Align to velocity', variants: 4,
+        params: [{ k: 'taper', label: 'Taper', tip: 'How sharply the flame tongue narrows toward its tip', min: 0.1, max: 1, step: 0.02, def: 0.55 }] },
+    { id: 'ember',  label: 'Ember', tip: 'Hot white core with a soft halo — embers that burn white on Add' },
+    { id: 'smoke',  label: 'Smoke Puff', tip: 'Cluster of soft blobs, 4 variants — smoke, dust and clouds', variants: 4 },
+    { id: 'blob',   label: 'Cartoon Puff', tip: 'Bumpy cartoon puff with a crisp edge, 4 variants — stylized smoke', variants: 4 },
+    { id: 'shard',  label: 'Shard', tip: 'Irregular sharp shard, 4 variants — debris, glass and rocks', variants: 4 }
 ];
 S.shapeDef = id => S.shapeDefs.find(d => d.id === id);
 

@@ -14,7 +14,12 @@ M.newDoc = function () {
         name: 'New Effect',
         comp: { w: 512, h: 512, dur: 1.2, fps: 60 },
         cam: { comp: 0 }, // градусы наклона камеры: scaleY = cos
-        exp: { cols: 3, rows: 3, frames: 9, cellW: 256, cellH: 256, t0: 0, t1: -1, mode: 'rgba', thr: 0, ss: 2 },
+        // pixelArt — экспорт 1:1 в разрешении слоя-пикселизатора: ячейка равна сетке
+        // пиксель-арта, суперсэмпл выключен, интерполяция nearest. Без этого блоки
+        // пересэмплируются в размер ячейки и лесенка снова становится неровной.
+        // cuts — внутренние границы кадров атласа (доли 0..1 между t0 и t1, длина
+        // frames-1); null = равномерная нарезка. Двигаются маркерами на таймлайне.
+        exp: { cols: 3, rows: 3, frames: 9, cellW: 256, cellH: 256, t0: 0, t1: -1, mode: 'rgba', thr: 0, ss: 2, pixelArt: false, cuts: null },
         textures: [],
         layers: []
     };
@@ -135,6 +140,9 @@ M.newEmitter = function (doc, name) {
     };
 };
 
+// Спрайт-слой БЕЗ преданимации: opacity/scale — статика, появление и затухание
+// ставятся ключами явно (пресеты Flash/Shockwave задают их сами). Фабрика — ещё и
+// шаблон гидрации: смена дефолта меняет смысл разреженных файлов, где поле опущено.
 M.newSprite = function (doc, name) {
     return {
         id: AFX.uid('lr'),
@@ -143,14 +151,14 @@ M.newSprite = function (doc, name) {
         on: true, solo: false,
         start: 0, end: doc.comp.dur,
         blend: 'add',
-        opacity: { keys: [AFX.Track.newKey(0, 1), AFX.Track.newKey(0.4, 0)] },
+        opacity: 1,
         glowL: 0, glowLR: 24,
         fadeOn: false, fadeX: 0, fadeY: 0, fadeR: 220, fadeSoft: 0.5,
         sp: {
             sprite: { kind: 'shape', id: 'soft', p: {} },
             size: 220,
             x: 0, y: 0,
-            scale: { keys: [AFX.Track.newKey(0, 0.3), AFX.Track.newKey(0.4, 1.4)] },
+            scale: 1,
             aspect: 1,
             rot: 0,
             color: [255, 255, 255],
@@ -161,7 +169,7 @@ M.newSprite = function (doc, name) {
 };
 
 // ATLAS-слой: рендерится тем же путём, что спрайт, но источник — только лист-текстура
-// и НИКАКОЙ фабричной преданимации (scale/opacity — статика, blend normal).
+// и blend normal (у спрайта add); scale/opacity — статика, как у спрайта.
 M.newAtlas = function (doc, name) {
     return {
         id: AFX.uid('lr'),
@@ -190,12 +198,16 @@ M.newAtlas = function (doc, name) {
 // POST_FX-слой: не рисует ничего своего, а обрабатывает ПИКСЕЛИ всего, что уже
 // накоплено ПОД ним (слои ниже по стеку) — аналог adjustment layer.
 // layer.opacity здесь = сила эффекта (0 — байпас), blend/glowL/fadeOn не действуют.
+// `targets` — АДРЕСАЦИЯ слоя-корректора: пустой массив = «всё, что ниже» (прежнее
+// поведение), непустой = только перечисленные слои. Во втором случае эти слои
+// рисуются в изолированный оффскрин, обрабатываются и композитятся на месте
+// корректора — ровно как pre-comp в AE (см. Engine.render).
 // Дискриминатор вида эффекта — fx.effect (НЕ 'kind': поле с именем kind делает
 // объект "атомом" для Model.hydrate, и разреженные файлы остались бы без дефолтов).
 M.newPostFx = function (doc, name) {
     return {
         id: AFX.uid('lr'),
-        name: name || 'Motion Blur',
+        name: name || 'Post FX',
         type: 'postfx',
         on: true, solo: false,
         start: 0, end: doc.comp.dur,
@@ -203,6 +215,7 @@ M.newPostFx = function (doc, name) {
         opacity: 1,         // трек 0..1: подмешивание обработанного кадра к чистому
         glowL: 0, glowLR: 24,
         fadeOn: false, fadeX: 0, fadeY: 0, fadeR: 220, fadeSoft: 0.5,
+        targets: [],        // id слоёв-адресатов; пусто — все слои ниже
         fx: {
             effect: 'mblur',
             mode: 'directional',    // directional — смаз по углу | radial — от центра (зум + вращение)
@@ -225,9 +238,190 @@ M.newPostFx = function (doc, name) {
             ramp: 0,                // 0..1: насколько гасить искажение ниже линии y0
             y0: 0,                  // трек: линия, ниже которой искажение затухает, px
             soft: 120,              // на какой высоте затухание доходит до ramp, px
-            seed: 0
+            seed: 0,
+            // --- ПИКСЕЛЬ-АРТ (effect: 'pixelate'): кадр под слоем пересобирается в
+            // сетку крупных пикселей. Это НЕ «снижение разрешения»: разрешение задаёт
+            // только сетку, а вид пикселя дают выборка, квантование альфы, палитра,
+            // дизеринг и обводка. Сетка привязана к КОМПОЗИЦИИ (не к камере) — иначе
+            // пиксели ползли бы по кадру.
+            pxW: 64,                // разрешение пиксель-арта по ГОРИЗОНТАЛИ, ячеек
+            pxSnap: true,           // блок = ЦЕЛОЕ число px композиции (ровные квадраты)
+            pxAspect: 1,            // высота/ширина пикселя (1 — квадрат)
+            pxOffX: 0, pxOffY: 0,   // сдвиг сетки, ДОЛЯ ячейки (-0.5..0.5)
+            pxSample: 'peak',       // peak — пик альфы блока (дефолт: тонкая линия остаётся
+                                    // связной) | box — площадное среднее | point — точка
+            pxGain: 1.5,            // усиление альфы ДО порога: вытягивает тонкие штрихи
+            pxAlpha: 'cut',         // soft — как есть | steps — ступени | cut — 1-битный порог
+            pxThr: 0.45,            // трек: порог альфы для 'cut'
+            pxALev: 4,              // число ступеней альфы для 'steps'
+            pxColor: 'none',        // none | levels — постеризация | palette | ramp — по яркости
+            pxLev: 6,               // уровней на канал для 'levels'
+            pxPal: 'pico8',         // id палитры (M.PIXEL_PALETTES) для 'palette'
+            pxRamp: AFX.Grad.presets.fire.make(),   // рампа яркости для 'ramp'
+            pxRampN: 6,             // ступеней рампы
+            pxSat: 1.15,            // насыщенность ДО квантования (усреднение её съедает)
+            pxCon: 1,               // контраст до квантования
+            pxDither: 0,            // 0 — без дизеринга | 2|4|8 — матрица Байера
+            pxDitherAmt: 0.7,       // сила дизеринга
+            pxOut: 0,               // сила обводки в ОДИН пиксель сетки (0 — нет)
+            pxOutCol: [10, 8, 16],  // цвет обводки
+            pxOutMode: 'outer'      // outer — снаружи силуэта | inner — по кромке внутри
         }
     };
+};
+
+// ---------- ПАЛИТРЫ ПИКСЕЛЬ-АРТА ----------
+// Данные, а не UI: лейблы английские, перевод — в точке показа через L().
+// Движок подбирает БЛИЖАЙШИЙ цвет палитры (взвешенное расстояние в RGB).
+M.PIXEL_PALETTES = [
+    { id: 'mono', label: 'Mono (1-bit)', colors: ['#000000', '#ffffff'] },
+    { id: 'gb', label: 'Game Boy (4)', colors: ['#0f380f', '#306230', '#8bac0f', '#9bbc0f'] },
+    { id: 'cga', label: 'CGA (16)', colors: [
+        '#000000', '#0000aa', '#00aa00', '#00aaaa', '#aa0000', '#aa00aa', '#aa5500', '#aaaaaa',
+        '#555555', '#5555ff', '#55ff55', '#55ffff', '#ff5555', '#ff55ff', '#ffff55', '#ffffff'] },
+    { id: 'pico8', label: 'PICO-8 (16)', colors: [
+        '#000000', '#1d2b53', '#7e2553', '#008751', '#ab5236', '#5f574f', '#c2c3c7', '#fff1e8',
+        '#ff004d', '#ffa300', '#ffec27', '#00e436', '#29adff', '#83769c', '#ff77a8', '#ffccaa'] },
+    { id: 'sweetie16', label: 'Sweetie (16)', colors: [
+        '#1a1c2c', '#5d275d', '#b13e53', '#ef7d57', '#ffcd75', '#a7f070', '#38b764', '#257179',
+        '#29366f', '#3b5dc9', '#41a6f6', '#73eff7', '#f4f4f4', '#94b0c2', '#566c86', '#333c57'] },
+    { id: 'nes', label: 'NES (54)', colors: [
+        '#7c7c7c', '#0000fc', '#0000bc', '#4428bc', '#940084', '#a80020', '#a81000', '#881400',
+        '#503000', '#007800', '#006800', '#005800', '#004058',
+        '#bcbcbc', '#0078f8', '#0058f8', '#6844fc', '#d800cc', '#e40058', '#f83800', '#e45c10',
+        '#ac7c00', '#00b800', '#00a800', '#00a844', '#008888',
+        '#f8f8f8', '#3cbcfc', '#6888fc', '#9878f8', '#f878f8', '#f85898', '#f87858', '#fca044',
+        '#f8b800', '#b8f818', '#58d854', '#58f898', '#00e8d8', '#787878',
+        '#fcfcfc', '#a4e4fc', '#b8b8f8', '#d8b8f8', '#f8b8f8', '#f8a4c0', '#f0d0b0', '#fce0a8',
+        '#f8d878', '#d8f878', '#b8f8b8', '#b8f8d8', '#00fcfc', '#000000'] },
+    { id: 'ember', label: 'Ember ramp (12)', colors: [
+        '#0d0503', '#1a0a06', '#3b1208', '#66210c', '#99380f', '#c85418',
+        '#e87a1e', '#f5a52c', '#ffc851', '#ffe58a', '#fff6cf', '#ffffff'] },
+    { id: 'ice', label: 'Ice ramp (12)', colors: [
+        '#030509', '#050a14', '#0b1a33', '#123055', '#1a4c7d', '#2470a8',
+        '#3897cc', '#59bde4', '#86d9f0', '#b3ecf7', '#d9f6fb', '#ffffff'] }
+];
+M.pixelPalette = function (id) {
+    for (let i = 0; i < M.PIXEL_PALETTES.length; i++) if (M.PIXEL_PALETTES[i].id === id) return M.PIXEL_PALETTES[i];
+    return M.PIXEL_PALETTES[3];
+};
+
+// ---------- СЕТКА ПИКСЕЛЬ-АРТА ----------
+// ЕДИНСТВЕННЫЙ источник правды о разрешении: им пользуются и движок (postfx), и
+// экспорт атласа с галочкой pixelArt, и инспектор, и превью. Отсюда же берётся
+// главное свойство честного пиксель-арта — РОВНЫЕ КВАДРАТЫ: при pxSnap блок равен
+// целому числу пикселей композиции, и ни одна ячейка не выходит на пиксель шире
+// соседней (именно этим правильная лесенка отличается от простого downscale).
+// Возвращает {gw, gh, bx, by, ox, oy}: gw x gh — разрешение арта, bx/by — размер
+// блока в пикселях композиции, ox/oy — левый верхний угол сетки (обычно <= 0).
+M.pixelGridOf = function (doc, fx) {
+    const cw = doc.comp.w, ch = doc.comp.h;
+    const want = AFX.clamp(fx.pxW | 0 || 64, 2, 2048);
+    let bx = cw / want;
+    bx = fx.pxSnap === false ? Math.max(0.5, bx) : Math.max(1, Math.round(bx));
+    const by = Math.max(0.5, bx * AFX.clamp(fx.pxAspect || 1, 0.25, 4));
+    // сетка обязана НАКРЫВАТЬ композицию целиком: при сдвиге берём ячейку про запас,
+    // иначе у края останется необработанная полоса
+    const offX = AFX.clamp(fx.pxOffX || 0, -0.5, 0.5), offY = AFX.clamp(fx.pxOffY || 0, -0.5, 0.5);
+    const gw = Math.max(1, Math.ceil(cw / bx - 1e-6) + (offX ? 1 : 0));
+    const gh = Math.max(1, Math.ceil(ch / by - 1e-6) + (offY ? 1 : 0));
+    return {
+        gw: gw, gh: gh, bx: bx, by: by,
+        ox: (cw - gw * bx) / 2 + offX * bx,
+        oy: (ch - gh * by) / 2 + offY * by
+    };
+};
+// сетка документа: САМЫЙ ВЕРХНИЙ включённый postfx-слой с эффектом pixelate
+// (слой выше по стеку — последний, кто трогает пиксели, его разрешение и итоговое)
+M.pixelGrid = function (doc) {
+    const ls = doc.layers || [];
+    for (let i = 0; i < ls.length; i++) {
+        const l = ls[i];
+        if (l.type === 'postfx' && l.on && l.fx && l.fx.effect === 'pixelate') return M.pixelGridOf(doc, l.fx);
+    }
+    return null;
+};
+
+// ---------- СИЛОВОЕ ПОЛЕ (слой 'force') ----------
+// Слой-корректор ФИЗИКИ: сам ничего не рисует и пикселей не трогает, а добавляет
+// ускорение частицам эмиттеров ПОД ним (адресация — та же `targets`, что у postfx:
+// пусто = все эмиттеры ниже). Работает внутри симуляции, а не по кадру, поэтому
+// частицы реально огибают поле, а не «размазываются» им.
+// Одно поле — радиальное, с эллиптической областью действия (sx/sy) вокруг центра (x/y).
+// Дискриминатор вида — `mode` (НЕ 'kind': поле с именем kind делает объект "атомом"
+// для Model.hydrate, и разреженные файлы остались бы без дефолтов).
+M.FORCE_MODES = { collapse: 1, expand: 1, drive: 1 };
+M.newForceField = function (mode) {
+    return {
+        id: AFX.uid('ff'),
+        on: true,
+        mode: mode || 'collapse',   // collapse — к центру | expand — от центра | drive — по касательной (закрутка)
+        strength: 600,              // трек: ускорение в центре поля, px/с² (минус — обратное направление)
+        falloff: 1,                 // спад к краю: w = (1 - d)^falloff, d — нормированное расстояние
+                                    // (0 — ровное поле с жёсткой кромкой, 1 — линейный, 2+ — узкое ядро)
+        x: 0, y: 0,                 // треки: центр поля
+        sx: 200, sy: 200            // треки: радиусы эллипса действия (за ним поле = 0)
+    };
+};
+// дозаполнение одного поля дефолтами: элементы массивов hydrate НЕ обходит
+M.fillForceField = function (f) {
+    const d = M.newForceField();
+    for (const k in d) if (f[k] == null) f[k] = d[k];
+    if (!M.FORCE_MODES[f.mode]) f.mode = 'collapse';
+    return f;
+};
+M.newForce = function (doc, name) {
+    return {
+        id: AFX.uid('lr'),
+        name: name || 'Force Field',
+        type: 'force',
+        on: true, solo: false,
+        start: 0, end: doc.comp.dur,
+        blend: 'normal',
+        opacity: 1,         // трек 0..1: общий множитель силы всех полей слоя (0 — байпас)
+        glowL: 0, glowLR: 24,
+        fadeOn: false, fadeX: 0, fadeY: 0, fadeR: 220, fadeSoft: 0.5,
+        targets: [],        // id эмиттеров-адресатов; пусто — все эмиттеры ниже
+        ff: { fields: [M.newForceField('collapse')] }
+    };
+};
+
+// ИНДЕКС СИЛОВЫХ ПОЛЕЙ: emitterId -> {rev, list:[force-слои]}.
+// Строится раз на кадр (слоёв единицы), симуляция сравнивает `rev` и при
+// расхождении делает reset — это тот же протокол инвалидации, что и layer._rev.
+// Solo НЕ учитывается осознанно: force-слой ничего не рисует, и соло эмиттера не
+// должно менять его физику. Порядок в doc.layers: 0 — верхний, ниже = больший индекс.
+function forceRev(list) {
+    let h = 2166136261;
+    for (let i = 0; i < list.length; i++) {
+        const s = list[i].id;
+        for (let c = 0; c < s.length; c++) h = Math.imul(h ^ s.charCodeAt(c), 16777619);
+        h = Math.imul(h ^ ((list[i]._rev | 0) + 1), 16777619);
+    }
+    return h | 0;
+}
+M.forceIndex = function (doc) {
+    const layers = doc.layers || [];
+    let map = null;
+    // снизу вверх: ближний сверху force-слой попадает в список первым (порядок в
+    // списке на физику не влияет — ускорения складываются)
+    for (let i = 0; i < layers.length; i++) {
+        const fl = layers[i];
+        if (fl.type !== 'force' || !fl.on) continue;
+        if (!fl.ff || !fl.ff.fields || !fl.ff.fields.length) continue;
+        const tg = (fl.targets && fl.targets.length) ? new Set(fl.targets) : null;
+        for (let j = i + 1; j < layers.length; j++) {
+            const em = layers[j];
+            if (em.type !== 'emitter' || !em.on) continue;
+            if (tg && !tg.has(em.id)) continue;
+            if (!map) map = new Map();
+            let e = map.get(em.id);
+            if (!e) { e = { rev: 0, list: [] }; map.set(em.id, e); }
+            e.list.push(fl);
+        }
+    }
+    if (map) map.forEach(e => { e.rev = forceRev(e.list); });
+    return map;
 };
 
 // ---------- пресеты слоёв ----------
@@ -501,6 +695,29 @@ M.layerPresets = [
             l.pt.drag = 0.5; l.pt.turbAmp = 160; l.pt.turbFreq = 0.8;
             return l;
         }
+    },
+    {
+        // Слой-пикселизатор поверх стека. Пресет специально ставит 1-битную альфу и
+        // усиление: мягкая масса частиц иначе превращается не в пиксель-арт, а в
+        // полупрозрачную кашу — ровно в то, что даёт наивное снижение разрешения.
+        id: 'pixelArt', label: 'Pixel Art (adjustment)',
+        make: function (doc) {
+            const l = M.newPostFx(doc, 'Pixel Art');
+            l.fx.effect = 'pixelate';
+            // разрешение под композицию: блок выходит целым числом пикселей
+            l.fx.pxW = AFX.clamp(Math.round(doc.comp.w / 8), 16, 256);
+            l.fx.pxSnap = true;
+            l.fx.pxSample = 'peak';
+            l.fx.pxGain = 1.6;
+            l.fx.pxAlpha = 'cut';
+            l.fx.pxThr = 0.4;
+            l.fx.pxColor = 'levels';
+            l.fx.pxLev = 6;
+            l.fx.pxSat = 1.25;
+            l.fx.pxDither = 4;
+            l.fx.pxDitherAmt = 0.5;
+            return l;
+        }
     }
 ];
 
@@ -555,10 +772,11 @@ function fillFrom(dst, tmpl) {
     }
     return dst;
 }
-M.LAYER_TYPES = { emitter: 1, sprite: 1, atlas: 1, postfx: 1 };
+M.LAYER_TYPES = { emitter: 1, sprite: 1, atlas: 1, postfx: 1, force: 1 };
 M.layerTemplate = function (doc, type) {
     if (type === 'emitter') return M.newEmitter(doc);
     if (type === 'postfx') return M.newPostFx(doc);
+    if (type === 'force') return M.newForce(doc);
     return type === 'atlas' ? M.newAtlas(doc) : M.newSprite(doc);
 };
 M.hydrate = function (doc) {
@@ -577,6 +795,9 @@ M.migrate = function (doc) {
     if ((doc.v | 0) < 2) (doc.layers || []).forEach(l => { if (l.em && l.em.subStep == null) l.em.subStep = false; });
     M.hydrate(doc);
     if (!doc.exp) doc.exp = M.newDoc().exp;
+    if (doc.exp.pixelArt == null) doc.exp.pixelArt = false;
+    // файлы до маркеров кадров нарезали атлас равномерно — ровно это и значит null
+    if (!Array.isArray(doc.exp.cuts)) doc.exp.cuts = null;
     if (!doc.cam) doc.cam = { comp: 0 };
     if (!doc.textures) doc.textures = [];
     (doc.layers || []).forEach(l => {
@@ -599,6 +820,20 @@ M.migrate = function (doc) {
             l.em.branch = { chance: 0, spread: 35, lifeScale: 0.6, sizeScale: 0.7, speedScale: 1, maxGen: 2 };
         }
         if (l.type === 'postfx' && !l.fx) l.fx = M.newPostFx(doc).fx;
+        // пиксель-арт: файлы до него не знали ни одного px*-поля — hydrate уже долил их
+        // из фабрики, здесь только страховка для явно урезанных fx
+        if (l.type === 'postfx' && l.fx && l.fx.pxW == null) {
+            const d = M.newPostFx(doc).fx;
+            Object.keys(d).forEach(k => { if (k.charAt(0) === 'p' && k.charAt(1) === 'x' && l.fx[k] == null) l.fx[k] = AFX.deepClone(d[k]); });
+        }
+        // адресация слоёв-корректоров: до неё postfx всегда брал всё, что ниже —
+        // пустой список ровно это и означает, старые файлы попиксельно те же
+        if ((l.type === 'postfx' || l.type === 'force') && !Array.isArray(l.targets)) l.targets = [];
+        if (l.type === 'force') {
+            if (!l.ff || !Array.isArray(l.ff.fields)) l.ff = M.newForce(doc).ff;
+            // элементы массивов hydrate не обходит — дозаполняем поля вручную
+            else l.ff.fields.forEach(f => M.fillForceField(f));
+        }
         if (l.em && !l.em.path) l.em.path = M.newPath();
         else if (l.em && l.em.path.fast == null) l.em.path.fast = true;
         if (l.em && !l.em.sub) l.em.sub = M.newSub();

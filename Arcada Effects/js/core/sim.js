@@ -20,10 +20,13 @@ const CV = { x: 0, y: 0 };
 function Sim(layer) {
     this.layerId = layer.id;
     this.rev = -1;
+    this.frev = 0;
+    this.fbuf = [];   // распакованные силовые поля на шаг (см. forceStep)
     this.reset(layer);
 }
 
-Sim.prototype.reset = function (layer) {
+Sim.prototype.reset = function (layer, fc) {
+    this.frev = fc ? fc.rev : 0;
     this.t = 0;
     this.rng = AFX.mulberry32((layer.em.seed | 0) * 7919 + 1013);
     this.acc = 0;
@@ -47,6 +50,39 @@ Sim.prototype.reset = function (layer) {
 
 // блок частицы по ярусу: 0 — основная частица слоя, >0 — дочерняя (суб-эмиттер)
 function ptOf(layer, tier) { return tier > 0 ? layer.em.sub.pt : layer.pt; }
+
+// ---------- СИЛОВЫЕ ПОЛЯ (слои 'force', индекс — Model.forceIndex) ----------
+// Поля распаковываются РАЗ НА ШАГ в плоский буфер по FF_N чисел на поле; в горячем
+// цикле остаётся только арифметика. Буфер переиспользуется: аллокаций на шаг нет.
+// Время у каждого force-слоя своё (ключи считаются от его start), поэтому местное
+// время поля = глобальное время шага минус start слоя-поля.
+const FF_N = 7;
+const FF_COLLAPSE = 0, FF_EXPAND = 1, FF_DRIVE = 2;
+Sim.prototype.forceStep = function (layer, fc, tl) {
+    const out = this.fbuf;
+    out.length = 0;
+    const gt = layer.start + tl;
+    const list = fc.list;
+    for (let i = 0; i < list.length; i++) {
+        const fl = list[i];
+        const flt = gt - fl.start;
+        if (flt < 0 || flt > fl.end - fl.start) continue;     // вне окна слоя-поля
+        const gain = AFX.clamp(T.val(fl.opacity, flt), 0, 1);
+        if (gain <= 0.001) continue;
+        const fields = fl.ff.fields;
+        for (let j = 0; j < fields.length; j++) {
+            const f = fields[j];
+            if (f.on === false) continue;
+            const s = T.val(f.strength, flt) * gain;
+            if (s === 0) continue;
+            const sx = Math.max(1, T.val(f.sx, flt)), sy = Math.max(1, T.val(f.sy, flt));
+            out.push(f.mode === 'expand' ? FF_EXPAND : (f.mode === 'drive' ? FF_DRIVE : FF_COLLAPSE),
+                T.val(f.x, flt), T.val(f.y, flt), sx, sy, s,
+                Math.max(0, f.falloff == null ? 1 : f.falloff));
+        }
+    }
+    return out.length ? out : null;
+};
 
 // покадрово постоянные величины блока частицы (хойстятся на шаг, свои для каждого яруса)
 // turbMode — поле СЛОЯ (между reset постоянно), ветвиться по нему в цикле законно;
@@ -266,10 +302,13 @@ Sim.prototype.spawnBranch = function (layer, p) {
     if (p.tier > 0) this.subN++;
 };
 
-Sim.prototype.step = function (layer) {
+Sim.prototype.step = function (layer, fc) {
     const tl = this.t;
     const em = layer.em, pt = layer.pt;
     const win = Math.max(0, layer.end - layer.start);
+    // силовые поля слоёв 'force', адресованных этому эмиттеру (null — их нет,
+    // и весь путь ниже идёт прежней арифметикой: старые файлы попиксельно те же)
+    const ff = fc ? this.forceStep(layer, fc, tl) : null;
 
     // ПУТЬ: запекается один раз на шаг (узлы анимируемы) — общий для эмиссии и ведения.
     // Выключен — ни одной лишней операции, старые эффекты попиксельно те же.
@@ -372,6 +411,31 @@ Sim.prototype.step = function (layer) {
                 ay += ph.ta * g * AFX.noise1(p.age * ph.tf, p.seed + 7777);
             }
         }
+        // СИЛОВЫЕ ПОЛЯ: область — эллипс (sx, sy) вокруг центра, вес по нормированному
+        // расстоянию w = (1-d)^falloff, за кромкой строго ноль. Направление — градиент
+        // этого нормированного расстояния (у круга сводится к обычному радиусу),
+        // поэтому вытянутое поле толкает вдоль своей оси, а не «в круг».
+        if (ff) {
+            for (let q = 0; q < ff.length; q += FF_N) {
+                const rx = ff[q + 3], ry = ff[q + 4];
+                const dx = (p.x - ff[q + 1]) / rx, dy = (p.y - ff[q + 2]) / ry;
+                const d2 = dx * dx + dy * dy;
+                if (d2 >= 1) continue;
+                const fo = ff[q + 6];
+                const u = 1 - Math.sqrt(d2);
+                const w = fo === 1 ? u : (fo === 2 ? u * u : (fo === 0 ? 1 : Math.pow(u, fo)));
+                if (w <= 0) continue;
+                let ux = dx / rx, uy = dy / ry;
+                const ul = Math.sqrt(ux * ux + uy * uy);
+                if (ul < 1e-9) continue;   // ровно в центре направления нет
+                ux /= ul; uy /= ul;
+                const s = ff[q + 5] * w;
+                const md = ff[q];
+                if (md === FF_DRIVE) { ax -= uy * s; ay += ux * s; }
+                else if (md === FF_EXPAND) { ax += ux * s; ay += uy * s; }
+                else { ax -= ux * s; ay -= uy * s; }
+            }
+        }
         // ПУТЬ КАК НАПРАВЛЯЮЩАЯ (только свои частицы слоя, ярус 0 — дети суб-эмиттера свободны):
         // attract — пружина к ближайшей точке, flow — разгон вдоль касательной,
         // lock — гашение поперечной скорости + прилипание позиции после интеграции.
@@ -426,11 +490,14 @@ Sim.prototype.step = function (layer) {
 };
 
 // довести симуляцию до последнего узла сетки <= tl; вернуть остаток для экстраполяции отрисовки
-Sim.prototype.ensure = function (layer, tl) {
+// fc — запись индекса силовых полей для этого эмиттера ({rev, list}) либо ничего:
+// правка любого force-слоя меняет fc.rev и ресетит симуляцию так же, как layer._rev
+Sim.prototype.ensure = function (layer, tl, fc) {
     const rev = layer._rev || 0;
-    if (rev !== this.rev || tl < this.t - 1e-6) this.reset(layer);
+    const frev = fc ? fc.rev : 0;
+    if (rev !== this.rev || frev !== this.frev || tl < this.t - 1e-6) this.reset(layer, fc);
     let guard = 0;
-    while (this.t + DT <= tl + 1e-9 && guard++ < 4000) this.step(layer);
+    while (this.t + DT <= tl + 1e-9 && guard++ < 4000) this.step(layer, fc);
     return Math.max(0, tl - this.t);
 };
 

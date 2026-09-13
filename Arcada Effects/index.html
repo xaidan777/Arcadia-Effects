@@ -47,8 +47,13 @@
         <div id="center-col" class="col">
             <div id="preview-toolbar"></div>
             <div id="preview-area">
-                <canvas id="view-canvas"></canvas>
-                <div id="preview-hud"></div>
+                <div id="preview-view">
+                    <canvas id="view-canvas"></canvas>
+                    <div id="preview-hud"></div>
+                </div>
+                <!-- плеебл-вьюпорт: открывается справа на вкладке Atlas (preview.js) -->
+                <div class="v-split hidden" id="ap-split" data-split="ap"></div>
+                <div id="atlas-play" class="hidden"></div>
             </div>
         </div>
 

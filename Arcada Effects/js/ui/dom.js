@@ -13,6 +13,8 @@ D.h = function (tag, attrs) {
             else if (k === 'text') el.textContent = v;
             else if (k === 'html') el.innerHTML = v;
             else if (k === 'style') el.setAttribute('style', v);
+            else if (k === 'tip') { if (v) el.setAttribute('data-tip', v); }           // подсказка (D.tip)
+            else if (k === 'tipHead') { if (v) el.setAttribute('data-tip-head', v); }
             else if (k.indexOf('on') === 0) el.addEventListener(k.slice(2), v);
             else if (v != null) el.setAttribute(k, v);
         }
@@ -58,6 +60,106 @@ D.icon = function (name) {
     span.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor">' + (ICONS[name] || '') + '</svg>';
     return span;
 };
+
+// --- ПОДСКАЗКИ ПРИ НАВЕДЕНИИ ---
+// Один элемент подсказки на документ и делегированные слушатели: ребилды панелей
+// ничего не ломают — владелец ищется от e.target вверх по дереву на каждом наведении.
+// Текст — атрибут data-tip (h(tag, {tip}) или D.tip(el, text, head)); head — первая
+// строка акцентом (полное имя параметра: узкий лейбл инспектора обрезается).
+// Нативный title тоже подхватывается: при наведении он переезжает в data-tip, иначе
+// поверх нашей всплыла бы ещё и системная. Пустой data-tip глушит подсказку предка.
+// Тексты подсказок — английские через L() + словарь TIPS в i18n.js (30–120 символов).
+const TIP_DELAY = 420;   // мс до первого показа
+const TIP_WARM = 500;    // мс после скрытия, когда соседняя подсказка всплывает сразу
+const TIP_HOLD_PX = 6;   // после нажатия / клавиши / колеса молчим, пока курсор не сдвинется на столько
+let tipEl = null, tipOwner = null, tipTimer = 0, tipCheck = 0, tipWarmUntil = 0;
+let tipMX = 0, tipMY = 0;
+let tipHold = false, tipHoldX = 0, tipHoldY = 0;
+
+D.tip = function (el, text, head) {
+    if (!el) return el;
+    el.removeAttribute('title');
+    if (text) el.setAttribute('data-tip', text); else el.removeAttribute('data-tip');
+    if (head) el.setAttribute('data-tip-head', head); else el.removeAttribute('data-tip-head');
+    if (el === tipOwner && tipEl && tipEl.classList.contains('on')) renderTip(el);
+    return el;
+};
+
+function findTipOwner(node) {
+    for (let el = node; el && el.nodeType === 1; el = el.parentElement) {
+        if (el.hasAttribute('title')) {
+            const t = el.getAttribute('title');
+            el.removeAttribute('title');
+            if (t) el.setAttribute('data-tip', t);
+        }
+        if (el.hasAttribute('data-tip')) return el.getAttribute('data-tip') ? el : null;
+    }
+    return null;
+}
+function renderTip(owner) {
+    if (!tipEl) {
+        tipEl = D.h('div', { cls: 'afx-tip' });
+        document.body.appendChild(tipEl);
+    }
+    tipEl.textContent = '';
+    const head = owner.getAttribute('data-tip-head');
+    if (head) tipEl.appendChild(D.h('b', { text: head }));
+    tipEl.appendChild(document.createTextNode(owner.getAttribute('data-tip') || ''));
+    // под курсором; не влезает снизу — над ним, по горизонтали прижимается к краю окна.
+    // Мерить от (0,0): у fixed-блока ширина переноса зависит от прошлого left
+    tipEl.style.left = '0px';
+    tipEl.style.top = '0px';
+    const r = tipEl.getBoundingClientRect();
+    let x = tipMX + 12, y = tipMY + 18;
+    if (x + r.width > window.innerWidth - 6) x = Math.max(6, window.innerWidth - 6 - r.width);
+    if (y + r.height > window.innerHeight - 6) y = Math.max(6, tipMY - r.height - 10);
+    tipEl.style.left = x + 'px';
+    tipEl.style.top = y + 'px';
+    tipEl.classList.add('on');
+}
+function showTip(owner) {
+    tipTimer = 0;
+    if (owner !== tipOwner || !owner.isConnected) return;
+    renderTip(owner);
+    // владелец мог уйти из DOM при ребилде панели — подсказка не должна висеть в воздухе
+    clearInterval(tipCheck);
+    tipCheck = setInterval(function () { if (!tipOwner || !tipOwner.isConnected) hideTip(true); }, 250);
+}
+function hideTip(forget) {
+    clearTimeout(tipTimer); tipTimer = 0;
+    clearInterval(tipCheck); tipCheck = 0;
+    if (tipEl && tipEl.classList.contains('on')) {
+        tipEl.classList.remove('on');
+        tipWarmUntil = performance.now() + TIP_WARM;
+    }
+    if (forget) tipOwner = null;
+}
+// Нажатие, клавиша, колесо: прячем и «держим» подсказки, пока курсор не сдвинется.
+// Иначе после драга бара или Ctrl+Z панель пересобирается, под НЕПОДВИЖНЫМ курсором
+// оказывается новый элемент, браузер шлёт ему pointerover — и подсказка всплывает сама.
+function holdTips() { hideTip(false); tipHold = true; tipHoldX = tipMX; tipHoldY = tipMY; }
+function releaseHold(e) {
+    if (tipHold && !e.buttons && Math.abs(e.clientX - tipHoldX) + Math.abs(e.clientY - tipHoldY) > TIP_HOLD_PX) tipHold = false;
+}
+document.addEventListener('pointerover', function (e) {
+    if (e.pointerType === 'touch') return;
+    tipMX = e.clientX; tipMY = e.clientY;
+    releaseHold(e);
+    const owner = findTipOwner(e.target);
+    if (owner === tipOwner) return;
+    hideTip(false);
+    tipOwner = owner;
+    if (!owner || e.buttons || tipHold) return;   // во время драга и сразу после нажатия — молчим
+    tipTimer = setTimeout(function () { showTip(owner); }, performance.now() < tipWarmUntil ? 40 : TIP_DELAY);
+}, true);
+document.addEventListener('pointermove', function (e) { tipMX = e.clientX; tipMY = e.clientY; releaseHold(e); }, { capture: true, passive: true });
+document.addEventListener('pointerup', function (e) { tipMX = e.clientX; tipMY = e.clientY; holdTips(); }, true);
+document.addEventListener('pointerout', function (e) { if (!e.relatedTarget) hideTip(true); }, true);
+document.addEventListener('pointerdown', holdTips, true);
+document.addEventListener('keydown', holdTips, true);
+document.addEventListener('wheel', holdTips, { capture: true, passive: true });
+['dragstart', 'scroll'].forEach(function (ev) { document.addEventListener(ev, function () { hideTip(false); }, true); });
+window.addEventListener('blur', function () { hideTip(true); });
 
 // --- контекст-меню ---
 let openMenu = null;
@@ -108,15 +210,16 @@ D.popover = function (x, y, contentEl) {
 };
 
 // --- модальный диалог (overlay + бокс + кнопки принять/отмена) ---
-// opts: {title, body, wide, acceptLabel, cancelLabel, onAccept()->false отменяет закрытие, onCancel()}
+// opts: {title, body, wide, acceptLabel, cancelLabel, acceptTip, cancelTip,
+//        onAccept()->false отменяет закрытие, onCancel()}
 let openModals = 0;
 D.modalOpen = function () { return openModals > 0; };
 D.modal = function (opts) {
     const box = D.h('div', { cls: 'modal-box' + (opts.wide ? ' wide' : '') });
     if (opts.title) box.appendChild(D.h('div', { cls: 'modal-title', text: opts.title }));
     if (opts.body) box.appendChild(opts.body);
-    const bCancel = D.h('button', { cls: 'tb', text: opts.cancelLabel || 'Cancel' });
-    const bAccept = D.h('button', { cls: 'tb accent', text: opts.acceptLabel || 'OK' });
+    const bCancel = D.h('button', { cls: 'tb', text: opts.cancelLabel || AFX.t('Cancel'), tip: opts.cancelTip });
+    const bAccept = D.h('button', { cls: 'tb accent', text: opts.acceptLabel || 'OK', tip: opts.acceptTip });
     box.appendChild(D.h('div', { cls: 'modal-btns' }, bCancel, bAccept));
     const ov = D.h('div', { cls: 'modal-overlay' }, box);
 
@@ -180,6 +283,7 @@ D.initSplitters = function () {
         lw: { var: '--lw', min: 220, max: 480, dir: 1, axis: 'x' },
         rw: { var: '--rw', min: 240, max: 520, dir: -1, axis: 'x' },
         tl: { var: '--tlh', min: 140, max: 460, dir: -1, axis: 'y' },
+        ap: { var: '--apw', min: 150, max: 900, dir: -1, axis: 'x' },
         left: { var: '--left-top', min: 20, max: 80, axis: 'pct', panel: 'left-col' },
         right: { var: '--right-top', min: 15, max: 80, axis: 'pct', panel: 'right-col' }
     };

@@ -30,12 +30,19 @@ function visibleLayers(doc) {
     return doc.layers.filter(l => l.on && (!anySolo || l.solo));
 }
 
-// переиспользуемый оффскрин нужного размера
+// переиспользуемый оффскрин нужного размера.
+// willReadFrequently: false — ОСОЗНАННО, а не «по вкусу». Постэффект искажения читает
+// оффскрин getImageData КАЖДЫЙ кадр, и без явного флага Chrome после ~800 чтений
+// (≈50 с плейбека) молча переводит такую канву на CPU-растеризацию. После этого каждый
+// drawImage GPU-оффскрина в неё (свечение слоя _layFx/_blurFx, группа _grp) становится
+// обратным чтением: Nova падал с 16 до 3 fps «после многократного проигрывания»,
+// getImageData 9 -> 240 мс. С флагом чтение стоит те же ~8 мс сколько угодно долго.
+// Флаг действует только при СОЗДАНИИ контекста — повторный getContext его не меняет.
 Engine.prototype.scratch = function (name, w, h) {
     let s = this[name];
     if (!s) {
         const c = document.createElement('canvas');
-        s = this[name] = { canvas: c, ctx: c.getContext('2d') };
+        s = this[name] = { canvas: c, ctx: c.getContext('2d', { willReadFrequently: false }) };
     }
     if (s.canvas.width !== w || s.canvas.height !== h) {
         s.canvas.width = w;
@@ -52,7 +59,14 @@ Engine.prototype.render = function (doc, t, ctx) {
     ctx.clearRect(0, 0, cw, ch);
     let count = 0;
 
+    // СИЛОВЫЕ ПОЛЯ: индекс «эмиттер -> действующие на него force-слои» строится раз
+    // на кадр и уезжает в Sim.ensure. Полей нет — null, и симуляция идёт прежним путём.
+    this._fidx = AFX.Model.forceIndex(doc);
+
     const layers = visibleLayers(doc);
+    // АДРЕСОВАННЫЕ КОРРЕКТОРЫ: postfx с непустым targets работает не по всей
+    // композиции, а по изолированной группе своих адресатов (см. postGroups).
+    const groups = postGroups(layers, t);
     // ПОСТЭФФЕКТЫ: если в стеке есть слой postfx, которому в этот момент есть что делать,
     // композиция копится в оффскрине (постэффект обрабатывает его пиксели на своём месте
     // в стеке) и блитится в ctx. Нет такого слоя — рисуем прямо в ctx, путь прежний
@@ -60,9 +74,10 @@ Engine.prototype.render = function (doc, t, ctx) {
     // Через оффскрин идут ТОЛЬКО слои под самым верхним активным постэффектом: рисование
     // в побочную канву стоит примерно в полтора раза дороже за draw-call (замерено),
     // поэтому всё, что выше по стеку, после сброса оффскрина рисуется прямо в ctx.
+    // Адресованный корректор общую композицию не трогает и в этот отбор не идёт.
     let out = ctx, topPost = -1;
     for (let i = 0; i < layers.length; i++) {
-        if (layers[i].type === 'postfx' && postParams(layers[i], t)) { topPost = i; break; }
+        if (layers[i].type === 'postfx' && !hasTargets(layers[i]) && postParams(layers[i], t)) { topPost = i; break; }
     }
     if (topPost >= 0) {
         const pc = this.scratch('_post', cw, ch);
@@ -73,10 +88,30 @@ Engine.prototype.render = function (doc, t, ctx) {
     // порядок массива: 0 = верхний; рисуем снизу вверх
     for (let i = layers.length - 1; i >= 0; i--) {
         const layer = layers[i];
-        const tl = t - layer.start;
+        if (groups && groups.claimed.has(i)) continue;   // слой рисуется внутри своей группы
+        if (layer.type === 'force') continue;            // силовое поле не рисует ничего
         if (layer.type === 'postfx') {
+            const grp = groups && groups.byFx.get(i);
+            if (grp) {
+                // изолированная группа: адресаты в свой оффскрин -> эффект -> композит
+                // на МЕСТЕ корректора, blend слоя-корректора = блендом группы
+                const g = this.scratch('_grp', cw, ch);
+                prepCtx(g.ctx, cw, ch);
+                for (let q = grp.length - 1; q >= 0; q--) {
+                    count += this.drawLayer(doc, layers[grp[q]], t, g.ctx, cw, ch, cx, cy, k);
+                }
+                this.applyPostFx(g.ctx, postParams(layer, t), cw, ch, cx, cy, k, doc);
+                out.globalAlpha = 1;
+                out.globalCompositeOperation = BLEND[layer.blend] || 'source-over';
+                out.drawImage(g.canvas, 0, 0);
+                out.globalCompositeOperation = 'source-over';
+                continue;
+            }
+            // адресаты заданы, но группы нет (байпас или ни один адресат не виден) —
+            // корректор молчит, а его адресаты рисуются обычным порядком стека
+            if (hasTargets(layer)) continue;
             const pp = postParams(layer, t);
-            if (pp) this.applyPostFx(out, pp, cw, ch, cx, cy, k);
+            if (pp) this.applyPostFx(out, pp, cw, ch, cx, cy, k, doc);
             if (i === topPost) {
                 // постэффектов выше нет — сбрасываем оффскрин и дорисовываем стек прямо в ctx
                 ctx.globalAlpha = 1;
@@ -86,46 +121,7 @@ Engine.prototype.render = function (doc, t, ctx) {
             }
             continue;
         }
-        const gAmt = layer.glowL != null ? AFX.clamp(T.val(layer.glowL, tl), 0, 3) : 0;
-        const fadeOn = !!layer.fadeOn;
-
-        if (gAmt <= 0.01 && !fadeOn) {
-            if (layer.type === 'emitter') count += this.drawEmitter(doc, layer, t, out, cx, cy, k);
-            else this.drawSprite(doc, layer, t, out, cx, cy, k);
-            continue;
-        }
-
-        // оффскрин-путь: радиальное затухание и/или послойное свечение
-        const lc = this.scratch('_layFx', cw, ch);
-        lc.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        lc.ctx.globalAlpha = 1;
-        lc.ctx.globalCompositeOperation = 'source-over';
-        lc.ctx.clearRect(0, 0, cw, ch);
-        if (layer.type === 'emitter') count += this.drawEmitter(doc, layer, t, lc.ctx, cx, cy, k);
-        else this.drawSprite(doc, layer, t, lc.ctx, cx, cy, k);
-
-        // маска затухания режет слой ДО свечения, чтобы ореол тоже гас
-        if (fadeOn) applyRadialFade(lc.ctx, layer, tl, cx, cy, k, cw, ch);
-
-        out.globalAlpha = 1;
-        out.globalCompositeOperation = BLEND[layer.blend] || 'source-over';
-        out.drawImage(lc.canvas, 0, 0);
-
-        const bc = this.scratch('_blurFx', cw, ch);
-        bc.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        bc.ctx.globalAlpha = 1;
-        bc.ctx.globalCompositeOperation = 'source-over';
-        bc.ctx.clearRect(0, 0, cw, ch);
-        bc.ctx.filter = 'blur(' + Math.max(1, layer.glowLR || 24) + 'px)';
-        bc.ctx.drawImage(lc.canvas, 0, 0);
-        bc.ctx.filter = 'none';
-
-        out.globalCompositeOperation = 'lighter';
-        for (let rem = gAmt; rem > 0.01; rem -= 1) {
-            out.globalAlpha = Math.min(1, rem);
-            out.drawImage(bc.canvas, 0, 0);
-        }
-        out.globalAlpha = 1;
+        count += this.drawLayer(doc, layer, t, out, cw, ch, cx, cy, k);
     }
     out.globalAlpha = 1;
     out.globalCompositeOperation = 'source-over';
@@ -137,6 +133,90 @@ Engine.prototype.render = function (doc, t, ctx) {
     this.lastCount = count;
     return count;
 };
+
+// ОДИН СЛОЙ композиции. Возвращает число частиц (у не-эмиттеров 0).
+// Путь glowL=0 && !fadeOn обязан оставаться ПРЯМЫМ (без оффскринов) — старые
+// эффекты попиксельно неизменны. Вынесено из render, чтобы тем же кодом рисовалась
+// и изолированная группа адресованного корректора.
+Engine.prototype.drawLayer = function (doc, layer, t, out, cw, ch, cx, cy, k) {
+    const tl = t - layer.start;
+    const gAmt = layer.glowL != null ? AFX.clamp(T.val(layer.glowL, tl), 0, 3) : 0;
+    const fadeOn = !!layer.fadeOn;
+    let count = 0;
+
+    if (gAmt <= 0.01 && !fadeOn) {
+        if (layer.type === 'emitter') count += this.drawEmitter(doc, layer, t, out, cx, cy, k);
+        else this.drawSprite(doc, layer, t, out, cx, cy, k);
+        return count;
+    }
+
+    // оффскрин-путь: радиальное затухание и/или послойное свечение
+    const lc = this.scratch('_layFx', cw, ch);
+    lc.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    lc.ctx.globalAlpha = 1;
+    lc.ctx.globalCompositeOperation = 'source-over';
+    lc.ctx.clearRect(0, 0, cw, ch);
+    if (layer.type === 'emitter') count += this.drawEmitter(doc, layer, t, lc.ctx, cx, cy, k);
+    else this.drawSprite(doc, layer, t, lc.ctx, cx, cy, k);
+
+    // маска затухания режет слой ДО свечения, чтобы ореол тоже гас
+    if (fadeOn) applyRadialFade(lc.ctx, layer, tl, cx, cy, k, cw, ch);
+
+    out.globalAlpha = 1;
+    out.globalCompositeOperation = BLEND[layer.blend] || 'source-over';
+    out.drawImage(lc.canvas, 0, 0);
+
+    const bc = this.scratch('_blurFx', cw, ch);
+    bc.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    bc.ctx.globalAlpha = 1;
+    bc.ctx.globalCompositeOperation = 'source-over';
+    bc.ctx.clearRect(0, 0, cw, ch);
+    bc.ctx.filter = 'blur(' + Math.max(1, layer.glowLR || 24) + 'px)';
+    bc.ctx.drawImage(lc.canvas, 0, 0);
+    bc.ctx.filter = 'none';
+
+    out.globalCompositeOperation = 'lighter';
+    for (let rem = gAmt; rem > 0.01; rem -= 1) {
+        out.globalAlpha = Math.min(1, rem);
+        out.drawImage(bc.canvas, 0, 0);
+    }
+    out.globalAlpha = 1;
+    return count;
+};
+
+// у слоя-корректора выбраны конкретные адресаты (пусто = «всё, что ниже»)
+function hasTargets(layer) { return !!(layer.targets && layer.targets.length); }
+
+// ГРУППЫ АДРЕСОВАННЫХ КОРРЕКТОРОВ: {claimed: layerIdx -> fxIdx, byFx: fxIdx -> [layerIdx]}.
+// Слой-адресат забирает БЛИЖАЙШИЙ сверху корректор (идём по стеку снизу вверх),
+// поэтому два корректора на один слой не дерутся. Байпас (postParams вернул null)
+// группу не заводит вовсе: адресаты рисуются обычным порядком, и оффскрин не нужен —
+// «выключенный постэффект бесплатен» остаётся верным и в адресованном режиме.
+// Корректоры и силовые поля адресатами быть не могут: это исключает вложенные группы,
+// а значит и гонку за оффскрин _grp.
+function postGroups(layers, t) {
+    let any = false;
+    for (let i = 0; i < layers.length; i++) {
+        if (layers[i].type === 'postfx' && hasTargets(layers[i])) { any = true; break; }
+    }
+    if (!any) return null;
+    const claimed = new Map(), byFx = new Map();
+    for (let i = layers.length - 1; i >= 0; i--) {
+        const fl = layers[i];
+        if (fl.type !== 'postfx' || !hasTargets(fl) || !postParams(fl, t)) continue;
+        const set = new Set(fl.targets);
+        const g = [];
+        for (let j = i + 1; j < layers.length; j++) {
+            const c = layers[j];
+            if (c.type === 'postfx' || c.type === 'force') continue;
+            if (claimed.has(j) || !set.has(c.id)) continue;
+            claimed.set(j, i);
+            g.push(j);
+        }
+        if (g.length) byFx.set(i, g);
+    }
+    return byFx.size ? { claimed: claimed, byFx: byFx } : null;
+}
 
 // радиальное затухание слоя: destination-in градиентом от подвижного центра
 // (fadeR — внешний радиус, мягкая кромка = fadeSoft-доля радиуса; эллипс по компрессии)
@@ -181,6 +261,7 @@ function postParams(layer, t) {
     const fx = layer.fx;
     if (!fx) return null;
     if (fx.effect === 'displace') return displaceParams(layer, fx, t);
+    if (fx.effect === 'pixelate') return pixelParams(layer, fx, t);
     if (fx.effect !== 'mblur') return null;
     const tl = t - layer.start;
     const win = Math.max(0.0001, layer.end - layer.start);
@@ -230,6 +311,275 @@ function displaceParams(layer, fx, t) {
         soft: Math.max(1, fx.soft || 120),
         seed: (fx.seed | 0) * 3571
     };
+}
+
+// ---------- ПИКСЕЛЬ-АРТ (postfx 'pixelate') ----------
+// Это НЕ «понизить разрешение». Разрешение задаёт только СЕТКУ; вид пикселя делают
+// четыре независимых шага, и каждый из них решает свою болячку наивного downscale:
+//   1. ВЫБОРКА       — чем усреднять блок (площадь / точка / пик альфы);
+//   2. АЛЬФА         — 1-битный порог вместо мыльной полупрозрачной каймы;
+//   3. ЦВЕТ          — постеризация / палитра / рампа по яркости + дизеринг Байера
+//                      по СЕТКЕ АРТА (а не по экранным пикселям — иначе выйдет шум);
+//   4. ОБВОДКА       — один пиксель сетки по силуэту.
+// Сетка привязана к композиции (Model.pixelGridOf), поэтому пиксели не ползут, а
+// pxSnap держит блок целым числом px композиции — ровные квадраты вместо лесенки
+// «через один пиксель шире».
+
+// Байер строится рекурсивно (детерминированно, без таблиц-простыней): каждый шаг
+// учетверяет матрицу. Значение нормируется в [-0.5, 0.5) и служит сдвигом ДО
+// квантования — классический упорядоченный дизеринг.
+function bayer(n) {
+    let m = [[0]];
+    while (m.length < n) {
+        const s = m.length, r = [];
+        for (let y = 0; y < s * 2; y++) r.push(new Array(s * 2));
+        for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) {
+            const v = m[y][x] * 4;
+            r[y][x] = v; r[y][x + s] = v + 2;
+            r[y + s][x] = v + 3; r[y + s][x + s] = v + 1;
+        }
+        m = r;
+    }
+    const out = new Float32Array(n * n), d = n * n;
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) out[y * n + x] = m[y][x] / d - 0.5 + 0.5 / d;
+    return out;
+}
+const BAYER = { 2: bayer(2), 4: bayer(4), 8: bayer(8) };
+
+// палитра -> плоский Uint8Array (кэш на id: разбор hex в горячем цикле не нужен)
+const PAL_CACHE = new Map();
+function palData(id) {
+    let p = PAL_CACHE.get(id);
+    if (p) return p;
+    const def = AFX.Model.pixelPalette(id);
+    p = new Uint8Array(def.colors.length * 3);
+    def.colors.forEach(function (hex, i) {
+        const c = AFX.hexToRgb(hex);
+        p[i * 3] = c[0]; p[i * 3 + 1] = c[1]; p[i * 3 + 2] = c[2];
+    });
+    PAL_CACHE.set(id, p);
+    return p;
+}
+// рампа -> плоский Uint8Array из n ступеней (кэш по сигнатуре стопов)
+const RAMP_CACHE = new Map();
+function rampData(g, n) {
+    const sig = n + '|' + g.stops.map(s => s.t.toFixed(3) + ':' + s.c.join(',')).join(';');
+    let r = RAMP_CACHE.get(sig);
+    if (r) return r;
+    r = new Uint8Array(n * 3);
+    for (let i = 0; i < n; i++) {
+        const c = AFX.Grad.val(g, n === 1 ? 0 : i / (n - 1));
+        r[i * 3] = c[0]; r[i * 3 + 1] = c[1]; r[i * 3 + 2] = c[2];
+    }
+    if (RAMP_CACHE.size > 32) RAMP_CACHE.clear();
+    RAMP_CACHE.set(sig, r);
+    return r;
+}
+
+function pixelParams(layer, fx, t) {
+    const tl = t - layer.start;
+    const win = Math.max(0.0001, layer.end - layer.start);
+    if (tl < 0 || tl > win) return null;
+    const mix = AFX.clamp(T.val(layer.opacity, tl), 0, 1);
+    if (mix <= 0.004) return null;
+    return {
+        effect: 'pixelate',
+        mix: mix,
+        sample: fx.pxSample || 'peak',
+        gain: Math.max(0, fx.pxGain == null ? 1 : fx.pxGain),
+        alpha: fx.pxAlpha || 'cut',
+        thr: AFX.clamp(T.val(fx.pxThr, tl), 0, 1),
+        aLev: AFX.clamp(fx.pxALev | 0 || 4, 2, 16),
+        color: fx.pxColor || 'none',
+        lev: AFX.clamp(fx.pxLev | 0 || 6, 2, 32),
+        pal: fx.pxPal || 'pico8',
+        ramp: fx.pxRamp, rampN: AFX.clamp(fx.pxRampN | 0 || 6, 2, 32),
+        sat: AFX.clamp(fx.pxSat == null ? 1 : fx.pxSat, 0, 3),
+        con: AFX.clamp(fx.pxCon == null ? 1 : fx.pxCon, 0.2, 3),
+        dither: (fx.pxDither | 0) === 2 || (fx.pxDither | 0) === 4 || (fx.pxDither | 0) === 8 ? fx.pxDither | 0 : 0,
+        ditherAmt: AFX.clamp(fx.pxDitherAmt == null ? 0.7 : fx.pxDitherAmt, 0, 2),
+        out: AFX.clamp(fx.pxOut || 0, 0, 1),
+        outCol: fx.pxOutCol || [0, 0, 0],
+        outMode: fx.pxOutMode === 'inner' ? 'inner' : 'outer',
+        fx: fx
+    };
+}
+
+// ближайший цвет палитры: веса примерно по чувствительности глаза (зелёный тяжелее),
+// иначе яркие искры уезжают в синеву
+function palNearest(P, r, g, b, o) {
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < P.length; i += 3) {
+        const dr = r - P[i], dg = g - P[i + 1], db = b - P[i + 2];
+        const d = dr * dr * 2.4 + dg * dg * 4.2 + db * db * 1.8;
+        if (d < bd) { bd = d; best = i; }
+    }
+    o[0] = P[best]; o[1] = P[best + 1]; o[2] = P[best + 2];
+}
+
+Engine.prototype.applyPixelate = function (octx, p, cw, ch, doc) {
+    const g = AFX.Model.pixelGridOf(doc, p.fx);
+    const gw = g.gw, gh = g.gh;
+    // 1:1 сетка без единой пиксельной операции — делать нечего, кадр не трогаем
+    if (g.bx <= 1.0001 && g.by <= 1.0001 && p.alpha === 'soft' && p.color === 'none' &&
+        p.out <= 0 && p.gain === 1 && p.sat === 1 && p.con === 1) return;
+
+    // оригинал нужен только при силе < 1 (точный lerp через 'lighter', как у смаза)
+    let orig = null;
+    if (p.mix < 0.999) {
+        orig = this.scratch('_pfC', cw, ch);
+        prepCtx(orig.ctx, cw, ch);
+        orig.ctx.drawImage(octx.canvas, 0, 0);
+    }
+
+    const sm = this.scratch('_pxA', gw, gh);
+    prepCtx(sm.ctx, gw, gh);
+    if (p.sample === 'peak') {
+        // ПИК: цвет и альфа берутся у самого «сильного» сэмпла блока, а не усредняются.
+        // Единственный режим, который читает кадр целиком (как искажение) — зато тонкая
+        // искра остаётся искрой нужного цвета, а не бледнеет до полупрозрачной каши.
+        peakDown(octx, sm.ctx, cw, ch, g);
+    } else {
+        // box — площадное среднее самой канвы (композитинг премультиплицированный,
+        // поэтому цвет линии сохраняется, падает только альфа — её возвращает pxGain).
+        // point — ближайший сэмпл: жёстче, но тонкое может пропасть целиком.
+        sm.ctx.imageSmoothingEnabled = p.sample !== 'point';
+        sm.ctx.imageSmoothingQuality = 'high';
+        // матрицей, а не отрицательным src-прямоугольником: сетка почти всегда начинается
+        // левее нуля (она накрывает композицию с запасом)
+        sm.ctx.setTransform(1 / g.bx, 0, 0, 1 / g.by, -g.ox / g.bx, -g.oy / g.by);
+        sm.ctx.drawImage(octx.canvas, 0, 0);
+        sm.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+
+    // --- работа по СЕТКЕ АРТА: это десятки тысяч пикселей, а не миллионы ---
+    const img = sm.ctx.getImageData(0, 0, gw, gh);
+    const D = img.data;
+    const BM = p.dither ? BAYER[p.dither] : null, BN = p.dither;
+    const P = p.color === 'palette' ? palData(p.pal) : null;
+    const RP = p.color === 'ramp' ? rampData(p.ramp, p.rampN) : null;
+    const lq = p.lev - 1, rq = p.rampN - 1, aq = p.aLev - 1;
+    const oc = [0, 0, 0];
+    for (let y = 0; y < gh; y++) {
+        for (let x = 0; x < gw; x++) {
+            const i = (y * gw + x) << 2;
+            let a = D[i + 3] / 255;
+            const dd = BM ? BM[(y % BN) * BN + (x % BN)] * p.ditherAmt : 0;
+            if (p.gain !== 1) a = a * p.gain;
+            a = a > 1 ? 1 : a;
+            // АЛЬФА: жёсткий порог — то, чем настоящий пиксель-арт отличается от
+            // размытого downscale. Дизеринг по порогу даёт классическое «растворение».
+            if (p.alpha === 'cut') a = (a + dd) >= p.thr ? 1 : 0;
+            else if (p.alpha === 'steps') a = AFX.clamp(Math.round((a + dd / aq) * aq) / aq, 0, 1);
+            if (a <= 0) { D[i + 3] = 0; continue; }
+            D[i + 3] = Math.round(a * 255);
+            if (p.color === 'none' && p.sat === 1 && p.con === 1) continue;
+
+            let r = D[i], gg = D[i + 1], b = D[i + 2];
+            if (p.sat !== 1 || p.con !== 1) {
+                const lum = 0.299 * r + 0.587 * gg + 0.114 * b;
+                // насыщенность — вокруг яркости, контраст — вокруг середины шкалы
+                r = lum + (r - lum) * p.sat; gg = lum + (gg - lum) * p.sat; b = lum + (b - lum) * p.sat;
+                if (p.con !== 1) { r = 128 + (r - 128) * p.con; gg = 128 + (gg - 128) * p.con; b = 128 + (b - 128) * p.con; }
+                r = r < 0 ? 0 : (r > 255 ? 255 : r); gg = gg < 0 ? 0 : (gg > 255 ? 255 : gg); b = b < 0 ? 0 : (b > 255 ? 255 : b);
+            }
+            if (p.color === 'levels') {
+                const st = 255 / lq;
+                r = AFX.clamp(Math.round((r + dd * st) / st), 0, lq) * st;
+                gg = AFX.clamp(Math.round((gg + dd * st) / st), 0, lq) * st;
+                b = AFX.clamp(Math.round((b + dd * st) / st), 0, lq) * st;
+            } else if (p.color === 'palette') {
+                const o = dd * 56;
+                palNearest(P, AFX.clamp(r + o, 0, 255), AFX.clamp(gg + o, 0, 255), AFX.clamp(b + o, 0, 255), oc);
+                r = oc[0]; gg = oc[1]; b = oc[2];
+            } else if (p.color === 'ramp') {
+                const lum = (0.299 * r + 0.587 * gg + 0.114 * b) / 255;
+                const k = AFX.clamp(Math.round((lum + dd / rq) * rq), 0, rq) * 3;
+                r = RP[k]; gg = RP[k + 1]; b = RP[k + 2];
+            }
+            D[i] = r; D[i + 1] = gg; D[i + 2] = b;
+        }
+    }
+
+    // ОБВОДКА в один пиксель сетки — по маске, снятой ДО правок, иначе обводка
+    // обводит саму себя и расползается вторым кольцом
+    if (p.out > 0) outline(D, gw, gh, p);
+
+    sm.ctx.putImageData(img, 0, 0);
+
+    // обратно на композицию НЕАРЕСТОМ: пиксели обязаны остаться квадратами
+    prepCtx(octx, cw, ch);
+    octx.imageSmoothingEnabled = false;
+    octx.globalAlpha = p.mix;
+    octx.setTransform(g.bx, 0, 0, g.by, g.ox, g.oy);
+    octx.drawImage(sm.canvas, 0, 0);
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    if (orig) {
+        octx.globalCompositeOperation = 'lighter';
+        octx.globalAlpha = 1 - p.mix;
+        octx.imageSmoothingEnabled = true;
+        octx.drawImage(orig.canvas, 0, 0);
+    }
+    octx.globalAlpha = 1;
+    octx.globalCompositeOperation = 'source-over';
+    octx.imageSmoothingEnabled = true;
+};
+
+// ПИК-выборка: по блоку берётся сэмпл с максимальной альфой (при равной — самый
+// яркий). Читает кадр целиком, поэтому и вынесена в отдельный режим.
+function peakDown(octx, dctx, cw, ch, g) {
+    const src = octx.getImageData(0, 0, cw, ch).data;
+    const out = dctx.createImageData(g.gw, g.gh);
+    const O = out.data;
+    for (let j = 0; j < g.gh; j++) {
+        const y0 = Math.max(0, Math.round(g.oy + j * g.by)), y1 = Math.min(ch, Math.round(g.oy + (j + 1) * g.by));
+        for (let i = 0; i < g.gw; i++) {
+            const x0 = Math.max(0, Math.round(g.ox + i * g.bx)), x1 = Math.min(cw, Math.round(g.ox + (i + 1) * g.bx));
+            let ba = -1, bl = -1, bs = -1;
+            for (let y = y0; y < y1; y++) {
+                const row = y * cw;
+                for (let x = x0; x < x1; x++) {
+                    const s = (row + x) << 2;
+                    const a = src[s + 3];
+                    if (a < ba) continue;
+                    const l = src[s] * 299 + src[s + 1] * 587 + src[s + 2] * 114;
+                    if (a > ba || l > bl) { ba = a; bl = l; bs = s; }
+                }
+            }
+            const d = (j * g.gw + i) << 2;
+            if (bs < 0 || ba <= 0) { O[d + 3] = 0; continue; }
+            O[d] = src[bs]; O[d + 1] = src[bs + 1]; O[d + 2] = src[bs + 2]; O[d + 3] = ba;
+        }
+    }
+    dctx.putImageData(out, 0, 0);
+}
+
+// обводка по 4-связности (диагональных «шипов» пиксель-арт не любит)
+function outline(D, gw, gh, p) {
+    const inside = new Uint8Array(gw * gh);
+    for (let i = 0, n = gw * gh; i < n; i++) inside[i] = D[(i << 2) + 3] > 127 ? 1 : 0;
+    const cr = p.outCol[0], cg = p.outCol[1], cb = p.outCol[2];
+    const outer = p.outMode === 'outer';
+    for (let y = 0; y < gh; y++) {
+        for (let x = 0; x < gw; x++) {
+            const c = y * gw + x;
+            if (inside[c] === (outer ? 1 : 0)) continue;
+            const edge = (x > 0 && inside[c - 1] !== inside[c]) || (x < gw - 1 && inside[c + 1] !== inside[c]) ||
+                         (y > 0 && inside[c - gw] !== inside[c]) || (y < gh - 1 && inside[c + gw] !== inside[c]);
+            if (!edge) continue;
+            const i = c << 2;
+            if (outer) {
+                // ячейка СНАРУЖИ силуэта — рождается новый пиксель обводки
+                D[i] = cr; D[i + 1] = cg; D[i + 2] = cb;
+                D[i + 3] = Math.round(255 * p.out);
+            } else {
+                // ячейка ВНУТРИ силуэта — цвет кромки подмешивается, альфа не трогается
+                D[i] = D[i] + (cr - D[i]) * p.out;
+                D[i + 1] = D[i + 1] + (cg - D[i + 1]) * p.out;
+                D[i + 2] = D[i + 2] + (cb - D[i + 2]) * p.out;
+            }
+        }
+    }
 }
 
 Engine.prototype.applyDisplace = function (octx, p, cw, ch) {
@@ -355,8 +705,9 @@ function tapMat(c, radial, pcx, pcy, dx, dy, rot, sc) {
 // 16 сэмплов стоят 4 прохода, а не 16 отрисовок кадра. Усреднение ТОЧНОЕ: две
 // отрисовки с globalAlpha 0.5 в режиме 'lighter' складывают премультиплицированные
 // цвет и альфу без клампа (0.5 + 0.5 = 1).
-Engine.prototype.applyPostFx = function (octx, p, cw, ch, cx, cy, k) {
+Engine.prototype.applyPostFx = function (octx, p, cw, ch, cx, cy, k, doc) {
     if (p.effect === 'displace') return this.applyDisplace(octx, p, cw, ch);
+    if (p.effect === 'pixelate') return this.applyPixelate(octx, p, cw, ch, doc);
     const n = 1 << p.passes;                    // фактическое число сэмплов
     const q = p.half ? 0.5 : 1;                 // масштаб рабочего буфера
     const bw = Math.max(1, Math.round(cw * q)), bh = Math.max(1, Math.round(ch * q));
@@ -436,7 +787,8 @@ Engine.prototype.drawEmitter = function (doc, layer, t, ctx, cx, cy, k) {
     const tl = t - layer.start;
     if (tl < 0) return 0;
     const sim = this.simFor(layer);
-    const ext = sim.ensure(layer, tl);
+    // силовые поля, адресованные этому эмиттеру (индекс собран в render)
+    const ext = sim.ensure(layer, tl, this._fidx ? this._fidx.get(layer.id) : null);
     const parts = sim.parts;
     if (!parts.length) return 0;
 

@@ -23,7 +23,16 @@ let graphPanKey = '';       // цель, к которой относится с
 let hintsEl = null;         // полупрозрачная шпаргалка по хоткеям
 
 const NAMES_W = 210;
-const TYPE_BADGE = { emitter: 'E', sprite: 'S', atlas: 'A', postfx: 'F' };
+// бейдж типа слоя; экспортируется — им же подписывает адресатов виджет W.targets
+const TYPE_BADGE = TL.TYPE_BADGE = { emitter: 'E', sprite: 'S', atlas: 'A', postfx: 'F', force: 'FF' };
+// подсказки бейджей типа (перевод — словарь TIPS в i18n.js, показ через L())
+const TYPE_TIPS = {
+    emitter: 'Emitter layer: spawns particles and simulates them',
+    sprite: 'Sprite layer: a single shape or texture with an animated transform',
+    atlas: 'Atlas layer: plays the frames of a sprite sheet',
+    postfx: 'Post FX layer: processes the image of the layers below it',
+    force: 'Force field layer: pushes the particles of the emitters below it'
+};
 
 const PROP_LABELS = {
     'opacity': 'Opacity',
@@ -47,7 +56,8 @@ const PROP_LABELS = {
     'sp.glow': 'Glow', 'sp.color': 'Color',
     'fx.length': 'Blur length', 'fx.angle': 'Blur angle', 'fx.spin': 'Spin',
     'fx.x': 'Center X', 'fx.y': 'Center Y',
-    'fx.amount': 'Displace amount', 'fx.y0': 'Calm line Y'
+    'fx.amount': 'Displace amount', 'fx.y0': 'Calm line Y',
+    'fx.pxThr': 'Alpha cutoff'
 };
 const PROP_PATHS = {
     emitter: ['opacity', 'glowL', 'fadeX', 'fadeY', 'fadeR', 'em.x', 'em.y', 'em.sx', 'em.sy', 'em.angle', 'em.spread', 'em.speed', 'em.rate', 'pt.size', 'pt.gravX', 'pt.gravY', 'pt.turbAmp',
@@ -55,7 +65,10 @@ const PROP_PATHS = {
     sprite: ['opacity', 'glowL', 'fadeX', 'fadeY', 'fadeR', 'sp.x', 'sp.y', 'sp.scale', 'sp.rot', 'sp.glow', 'sp.color'],
     atlas: ['opacity', 'glowL', 'fadeX', 'fadeY', 'fadeR', 'sp.x', 'sp.y', 'sp.scale', 'sp.rot'],
     // у постэффекта opacity — СИЛА эффекта; blend/свечение/затухание для него мертвы
-    postfx: ['opacity', 'fx.length', 'fx.angle', 'fx.spin', 'fx.x', 'fx.y', 'fx.amount', 'fx.y0']
+    postfx: ['opacity', 'fx.length', 'fx.angle', 'fx.spin', 'fx.x', 'fx.y', 'fx.amount', 'fx.y0', 'fx.pxThr'],
+    // у силового поля opacity — общий множитель силы; параметры самих полей
+    // динамические (их число задаёт пользователь) — см. forcePropPaths
+    force: ['opacity']
 };
 const CURVE_DEFS = [
     { key: 'sizeOL', label: 'Size over life', yMax: 1.6 },
@@ -85,16 +98,32 @@ function pathPropPaths(layer) {
     });
     return res;
 }
+// свойства СИЛОВЫХ ПОЛЕЙ динамические: число полей задаёт пользователь
+function forcePropPaths(layer) {
+    const ff = layer.ff;
+    if (!ff || !ff.fields) return [];
+    const res = [];
+    ff.fields.forEach((f, i) => {
+        FF_KEYS.forEach(k => res.push('ff.fields.' + i + '.' + k));
+    });
+    return res;
+}
+const FF_KEYS = ['strength', 'x', 'y', 'sx', 'sy'];
+const FF_LABELS = { strength: 'Strength', x: 'Position X', y: 'Position Y', sx: 'Scale X', sy: 'Scale Y' };
 function propLabel(path, layer) {
     const m = /^em\.path\.nodes\.(\d+)\.([xy])$/.exec(path);
     if (m) return L('Path node') + ' ' + (+m[1] + 1) + ' ' + m[2].toUpperCase();
-    // у постэффекта opacity — сила эффекта, а не прозрачность (слой ничего не рисует)
+    const f = /^ff\.fields\.(\d+)\.(\w+)$/.exec(path);
+    if (f) return L('Field') + ' ' + (+f[1] + 1) + ' ' + L(FF_LABELS[f[2]] || f[2]);
+    // у корректоров opacity — сила, а не прозрачность (сами они ничего не рисуют)
     if (layer && layer.type === 'postfx' && path === 'opacity') return L('Effect strength');
+    if (layer && layer.type === 'force' && path === 'opacity') return L('Master strength');
     return L(PROP_LABELS[path] || path);
 }
 TL.animTracks = function (layer) {
     const res = [];
-    const paths = (PROP_PATHS[layer.type] || []).concat(layer.type === 'emitter' ? pathPropPaths(layer) : []);
+    const paths = (PROP_PATHS[layer.type] || []).concat(
+        layer.type === 'emitter' ? pathPropPaths(layer) : (layer.type === 'force' ? forcePropPaths(layer) : []));
     paths.forEach(path => {
         const r = resolve(layer, path);
         if (r.obj && T.isAnim(r.obj[r.key])) res.push({ path: path, label: propLabel(path, layer), obj: r.obj, key: r.key, tr: r.obj[r.key] });
@@ -169,6 +198,9 @@ TL.init = function () {
     AFX.on('layer', queueRebuild);
     AFX.on('comp', queueRebuild);
     AFX.on('resize', queueRebuild);
+    // маркеры кадров атласа живут на вкладке Atlas и зависят от настроек экспорта
+    AFX.on('tab', queueRebuild);
+    AFX.on('atlas', queueRebuild);
     AFX.on('time', updateTimeUI);
     AFX.on('play', function () {
         btnPlayIcon.innerHTML = '';
@@ -206,44 +238,46 @@ function endInteract() {
 // ---------- шапка ----------
 function buildHead() {
     const head = h('div', { id: 'tl-head' });
-    const btn = function (icon, title, cb) {
-        const b = h('button', { cls: 'tr-btn', title: title }, D.icon(icon));
-        b.addEventListener('click', cb);
+    const btn = function (o) {
+        const b = h('button', { cls: 'tr-btn', tip: o.tip }, D.icon(o.icon));
+        b.addEventListener('click', o.click);
         return b;
     };
-    head.appendChild(btn('toStart', L('To start (Home)'), function () { AFX.setTime(0); }));
-    head.appendChild(btn('stepBack', L('Frame back (Left arrow)'), function () { AFX.stepFrame(-1); }));
-    const bPlay = h('button', { cls: 'tr-btn', title: L('Play / pause (Space)') });
+    head.appendChild(btn({ icon: 'toStart', tip: L('Jump to the start of the composition (Home)'), click: function () { AFX.setTime(0); } }));
+    head.appendChild(btn({ icon: 'stepBack', tip: L('Step one frame back (Left arrow; with Shift — 10 frames)'), click: function () { AFX.stepFrame(-1); } }));
+    const bPlay = h('button', { cls: 'tr-btn', tip: L('Play or pause the composition (Space)') });
     btnPlayIcon = bPlay;
     bPlay.appendChild(D.icon('play'));
     bPlay.addEventListener('click', function () { AFX.setPlaying(!AFX.state.playing); });
     head.appendChild(bPlay);
-    head.appendChild(btn('stop', L('Stop (to start)'), function () { AFX.setPlaying(false); AFX.setTime(0); }));
-    head.appendChild(btn('stepFwd', L('Frame forward (Right arrow)'), function () { AFX.stepFrame(1); }));
-    head.appendChild(btn('toEnd', L('To end (End)'), function () { AFX.setTime(AFX.state.doc.comp.dur); }));
-    const bLoop = h('button', { cls: 'tr-btn on', title: L('Loop') }, D.icon('loop'));
+    head.appendChild(btn({ icon: 'stop', tip: L('Stop playback and return to the start'), click: function () { AFX.setPlaying(false); AFX.setTime(0); } }));
+    head.appendChild(btn({ icon: 'stepFwd', tip: L('Step one frame forward (Right arrow; with Shift — 10 frames)'), click: function () { AFX.stepFrame(1); } }));
+    head.appendChild(btn({ icon: 'toEnd', tip: L('Jump to the end of the composition (End)'), click: function () { AFX.setTime(AFX.state.doc.comp.dur); } }));
+    const bLoop = h('button', { cls: 'tr-btn on', tip: L('Loop playback: start over after the end instead of stopping') }, D.icon('loop'));
     bLoop.addEventListener('click', function () {
         AFX.state.loop = !AFX.state.loop;
         bLoop.classList.toggle('on', AFX.state.loop);
     });
     head.appendChild(bLoop);
 
-    timeLabel = h('div', { cls: 'tl-time' });
+    timeLabel = h('div', { cls: 'tl-time', tip: L('Current time / composition length, then the frame number') });
     head.appendChild(timeLabel);
 
     // добавление слоёв
-    const addEm = h('button', { cls: 'mini-btn', title: L('New particle emitter') }, D.icon('plus'), L('Emitter'));
+    const addEm = h('button', { cls: 'mini-btn', tip: L('Add a particle emitter layer above the selected layer') }, D.icon('plus'), L('Emitter'));
     addEm.addEventListener('click', function () { AFX.Ops.addLayer(AFX.Model.newEmitter(AFX.state.doc)); });
-    const addSp = h('button', { cls: 'mini-btn', title: L('New sprite layer') }, D.icon('plus'), L('Sprite'));
+    const addSp = h('button', { cls: 'mini-btn', tip: L('Add a layer with a single sprite (a shape or a texture) above the selected one') }, D.icon('plus'), L('Sprite'));
     addSp.addEventListener('click', function () { AFX.Ops.addLayer(AFX.Model.newSprite(AFX.state.doc)); });
-    const addAt = h('button', { cls: 'mini-btn', title: L('New sprite atlas layer (sheet frames, no preset animation)') }, D.icon('plus'), L('Atlas'));
+    const addAt = h('button', { cls: 'mini-btn', tip: L('New sprite atlas layer (sheet frames, no preset animation)') }, D.icon('plus'), L('Atlas'));
     addAt.addEventListener('click', function () {
         // всегда через диалог: источник (файл/drop/лист проекта) + сетка, приём создаёт слой
         AFX.TexturesPanel.openAtlasPicker({ accept: function (id) { AFX.Ops.addAtlasLayer(id); } });
     });
-    const addFx = h('button', { cls: 'mini-btn', title: L('New post-effect layer (processes everything below it)') }, D.icon('plus'), L('Post FX'));
+    const addFx = h('button', { cls: 'mini-btn', tip: L('New post-effect layer (processes everything below it)') }, D.icon('plus'), L('Post FX'));
     addFx.addEventListener('click', function () { AFX.Ops.addLayer(AFX.Model.newPostFx(AFX.state.doc)); });
-    const addPre = h('button', { cls: 'mini-btn', title: L('Layer from preset') }, L('Presets'));
+    const addFF = h('button', { cls: 'mini-btn', tip: L('New force field layer: radial fields that pull, push or swirl the particles of the emitters below') }, D.icon('plus'), L('Force'));
+    addFF.addEventListener('click', function () { AFX.Ops.addLayer(AFX.Model.newForce(AFX.state.doc)); });
+    const addPre = h('button', { cls: 'mini-btn', tip: L('Add a ready-made layer: flash, shockwave, fire, sparks, lightning and more') }, L('Presets'));
     addPre.addEventListener('click', function () {
         const r = addPre.getBoundingClientRect();
         D.ctxMenu(r.left, r.top - 6 - AFX.Model.layerPresets.length * 26, AFX.Model.layerPresets.map(p => ({
@@ -256,11 +290,12 @@ function buildHead() {
     head.appendChild(addSp);
     head.appendChild(addAt);
     head.appendChild(addFx);
+    head.appendChild(addFF);
     head.appendChild(addPre);
 
     const modeBtns = h('div', { cls: 'tl-mode-btns' });
-    const bDope = h('button', { cls: 'tr-btn on', title: L('Dope sheet: keys and bars. Right-click a key for easing. Shift+click for multi-select.') }, D.icon('dope'));
-    const bGraph = h('button', { cls: 'tr-btn', title: L('Animation graphs and over-life curves') }, D.icon('graph'));
+    const bDope = h('button', { cls: 'tr-btn on', tip: L('Dope sheet: keys and bars. Right-click a key for easing. Shift+click for multi-select.') }, D.icon('dope'));
+    const bGraph = h('button', { cls: 'tr-btn', tip: L('Animation graphs and over-life curves') }, D.icon('graph'));
     bDope.addEventListener('click', function () { setMode('dope'); });
     bGraph.addEventListener('click', function () { setMode('graph'); });
     AFX.on('tlmode', function () {
@@ -342,7 +377,7 @@ TL.rebuild = function () {
     // линейка
     const rulerRow = h('div', { id: 'tl-ruler-row' });
     rulerRow.appendChild(h('div', { id: 'tl-corner', text: mode === 'dope' ? L('Layers') : L('Graph') }));
-    rulerDiv = h('div', { id: 'tl-ruler' });
+    rulerDiv = h('div', { id: 'tl-ruler', tip: L('Click or drag to move the playhead; hold Shift to turn off frame snapping') });
     rulerCanvas = h('canvas');
     rulerCanvas.width = timeW;
     rulerCanvas.height = 24;
@@ -355,6 +390,7 @@ TL.rebuild = function () {
         move: function (e) { scrub(e); }
     });
     rulerDiv.addEventListener('pointerdown', function (e) { if (e.button === 0) scrub(e); });
+    buildFrameMarkers(doc);
 
     if (mode === 'dope') buildDope(doc, timeW);
     else buildGraph(doc, timeW);
@@ -377,6 +413,105 @@ function scrub(e) {
     let t = tOf(e.clientX - r.left);
     if (!e.shiftKey) t = snapTime(t);
     AFX.setTime(AFX.clamp(t, 0, AFX.state.doc.comp.dur));
+}
+
+// ---------- маркеры кадров атласа ----------
+// Видны ТОЛЬКО на вкладке Atlas. Флажок — это ГРАНИЦА кадра, а не его сэмпл:
+// сэмплинг как был по центрам интервалов. Залитый флажок = начало кадра (первый —
+// exp.t0, он же Start в настройках), полый последний = конец диапазона (exp.t1, End).
+// Внутренние границы в настройках не показаны и живут в exp.cuts — долями 0..1
+// между t0 и t1, поэтому правка Start/End не ломает их порядок.
+const FM_PATH = 'M0.8 0.8 H11.2 V9.2 L6 15.2 L0.8 9.2 Z';
+
+function buildFrameMarkers(doc) {
+    if (AFX.state.tab !== 'atlas') return;
+    const n = AFX.Atlas.frameTimes(doc).frames;
+    const recs = [];
+    // позиции пересчитываются из ЖИВОГО документа: драг края двигает все внутренние
+    // маркеры разом (они доли диапазона), а ребилд во время драга подавлен
+    const placeAll = function () {
+        const b = AFX.Atlas.frameTimes(doc).bounds;
+        recs.forEach(function (rec, i) {
+            rec.el.style.left = xOf(b[i]) + 'px';
+            // своё округление, а не fmtTime: тот срезает миллисекунды вниз и конец
+            // диапазона 1.2 показал бы как 1.199
+            rec.time.textContent = (Math.round(b[i] * 1000) / 1000).toFixed(3) + L('s');
+        });
+    };
+    for (let i = 0; i <= n; i++) {
+        const rec = frameMarker(doc, i, n, placeAll);
+        recs.push(rec);
+        rulerDiv.appendChild(rec.el);
+    }
+    placeAll();
+}
+
+function frameMarker(doc, i, n, placeAll) {
+    const last = i === n;
+    // своя CSS-подсказка .fm-tip (кадр и живое время при драге); пустой data-tip
+    // глушит подсказку линейки поверх неё
+    const el = h('div', { cls: 'tl-fm' + (last ? ' end' : ''), 'data-tip': '' });
+    el.innerHTML = '<svg viewBox="0 0 12 16"><path d="' + FM_PATH + '"/></svg>';
+    const timeEl = h('i');
+    el.appendChild(h('div', { cls: 'fm-tip' },
+        h('b', { text: last ? L('Atlas end') : L('Frame') + ' ' + (i + 1) }), timeEl));
+
+    let started = false, base = null;
+    D.drag(el, {
+        start: function () {
+            started = false;
+            base = AFX.Atlas.frameTimes(doc);
+            el.classList.add('drag');
+            beginInteract();
+        },
+        move: function (e, dx) {
+            if (!started) { started = true; AFX.pushUndo(); }
+            let t = tOf(xOf(base.bounds[i]) + dx);
+            if (!e.shiftKey) t = snapTime(t);
+            setFrameBound(doc, i, n, t, base);
+            placeAll();
+            // плейхед встаёт на редактируемый кадр: плеебл-вьюпорт и подсветка
+            // ячейки листа показывают ровно то, что сейчас двигают
+            const ft = AFX.Atlas.frameTimes(doc);
+            AFX.setTime(ft.times[Math.min(i, n - 1)]);
+        },
+        end: function (e, moved) {
+            el.classList.remove('drag');
+            endInteract();
+            if (moved) { AFX.emit('atlas'); AFX.commitEnd(); }
+            TL.rebuild();
+        }
+    });
+    return { el: el, time: timeEl };
+}
+
+// i == 0 — exp.t0 (поле Start), i == n — exp.t1 (поле End), между — exp.cuts
+function setFrameBound(doc, i, n, t, base) {
+    const e = doc.exp;
+    const dur = doc.comp.dur;
+    const minLen = 1 / fpsOf();
+    if (i === 0) { e.t0 = AFX.clamp(t, 0, base.t1 - minLen); return; }
+    if (i === n) {
+        // до самого конца композиции — вернуть «-1» (следовать за длительностью)
+        e.t1 = t >= dur - minLen * 0.5 ? -1 : AFX.clamp(t, base.t0 + minLen, dur);
+        return;
+    }
+    const span = base.t1 - base.t0;
+    const cuts = ensureCuts(e, n, base);
+    cuts[i - 1] = span > 1e-9
+        ? AFX.clamp((AFX.clamp(t, base.bounds[i - 1], base.bounds[i + 1]) - base.t0) / span, 0, 1)
+        : i / n;
+}
+
+// материализация внутренних границ: длина frames-1, стартовые значения — ТЕКУЩАЯ
+// нарезка, поэтому появление массива само по себе ничего не меняет
+function ensureCuts(e, n, base) {
+    if (Array.isArray(e.cuts) && e.cuts.length === n - 1) return e.cuts;
+    const span = base.t1 - base.t0;
+    const cuts = [];
+    for (let k = 1; k < n; k++) cuts.push(span > 1e-9 ? (base.bounds[k] - base.t0) / span : k / n);
+    e.cuts = cuts;
+    return cuts;
 }
 
 function drawRuler() {
@@ -409,6 +544,15 @@ function drawRuler() {
             const x = Math.round(xOf(f / fpsOf())) + 0.5;
             ctx.beginPath(); ctx.moveTo(x, 18); ctx.lineTo(x, 24); ctx.stroke();
         }
+    }
+    // текущий кадр атласа: полоса между его границами — тот же кадр, что выделен
+    // кликом по ячейке листа и показан в плеебл-вьюпорте
+    if (AFX.state.tab === 'atlas') {
+        const ft = AFX.Atlas.frameTimes(doc);
+        const f = AFX.Atlas.frameAt(ft, AFX.state.time);
+        const x0 = xOf(ft.bounds[f]), x1 = xOf(ft.bounds[f + 1]);
+        ctx.fillStyle = 'rgba(89,227,226,0.14)';
+        ctx.fillRect(x0, 0, Math.max(1, x1 - x0), 24);
     }
     const xe = Math.round(xOf(doc.comp.dur)) + 0.5;
     ctx.strokeStyle = 'rgba(255,68,68,0.5)';
@@ -450,14 +594,17 @@ function layerRow(doc, layer) {
     const tracks = TL.animTracks(layer);
     const expandable = layer.type === 'emitter' || tracks.length > 0;
 
-    const exp = h('span', { cls: 'exp', title: L('Expand parameters (U)'), text: expandable ? (layer._tlOpen ? '▼' : '►') : '' });
+    const exp = h('span', {
+        cls: 'exp', text: expandable ? (layer._tlOpen ? '▼' : '►') : '',
+        tip: expandable ? L('Show or hide the animated properties and curves of this layer (U)') : null
+    });
     exp.addEventListener('click', function (e) {
         e.stopPropagation();
         layer._tlOpen = !layer._tlOpen;
         TL.rebuild();
     });
 
-    const eye = h('span', { cls: 'eye-btn' + (layer.on ? ' on' : ''), title: L('Layer visibility') }, D.icon(layer.on ? 'eye' : 'eyeOff'));
+    const eye = h('span', { cls: 'eye-btn' + (layer.on ? ' on' : ''), tip: L('Show or hide the layer, both in the preview and in the export') }, D.icon(layer.on ? 'eye' : 'eyeOff'));
     eye.addEventListener('click', function (e) {
         e.stopPropagation();
         AFX.pushUndo();
@@ -466,7 +613,7 @@ function layerRow(doc, layer) {
         AFX.commitEnd();
         AFX.emit('layers');
     });
-    const solo = h('span', { cls: 'solo-btn' + (layer.solo ? ' on' : ''), title: L('Solo') }, D.icon('solo'));
+    const solo = h('span', { cls: 'solo-btn' + (layer.solo ? ' on' : ''), tip: L('Solo: while any layer is soloed, only soloed layers are drawn') }, D.icon('solo'));
     solo.addEventListener('click', function (e) {
         e.stopPropagation();
         AFX.pushUndo();
@@ -476,20 +623,24 @@ function layerRow(doc, layer) {
         AFX.emit('layers');
     });
 
-    const nm = h('span', { cls: 'nm', text: layer.name, title: layer.name });
+    const nm = h('span', { cls: 'nm', text: layer.name });
     nm.addEventListener('dblclick', function (e) {
         e.stopPropagation();
         startRename(nm, layer);
     });
 
-    const del = h('span', { cls: 'del-btn', title: L('Delete layer (Del)') }, D.icon('del'));
+    const del = h('span', { cls: 'del-btn', tip: L('Delete this layer (the Del key deletes all selected layers)') }, D.icon('del'));
     del.addEventListener('click', function (e) {
         e.stopPropagation();
         AFX.Ops.remove(layer);
     });
 
-    const nameCell = h('div', { cls: 'tl-name' }, exp, eye, solo,
-        h('span', { cls: 'type-badge sm ' + layer.type, text: TYPE_BADGE[layer.type] || 'S' }),
+    // подсказка ячейки — поверх неё свои у кнопок; шапка — полное имя (оно обрезается)
+    const nameCell = h('div', {
+        cls: 'tl-name', tipHead: layer.name,
+        tip: L('Click — select (Shift — add), double-click — rename, drag — reorder, right-click — menu')
+    }, exp, eye, solo,
+        h('span', { cls: 'type-badge sm ' + layer.type, text: TYPE_BADGE[layer.type] || 'S', tip: TYPE_TIPS[layer.type] && L(TYPE_TIPS[layer.type]) }),
         nm, del);
 
     nameCell.addEventListener('click', function (e) {
@@ -540,9 +691,11 @@ function layerRow(doc, layer) {
 
     // бар
     const track = h('div', { cls: 'tl-track' });
-    const barTitle = layer.type === 'emitter' ? L('Emission window (particles outlive it)')
-        : (layer.type === 'postfx' ? L('Post-effect window') : L('Visibility window'));
-    const bar = h('div', { cls: 'tl-bar ' + layer.type, title: barTitle });
+    const barTip = layer.type === 'emitter' ? L('Emission window — drag to move, drag an edge to trim; particles outlive its end')
+        : (layer.type === 'postfx' ? L('Post-effect window — drag to move, drag an edge to trim when the effect works')
+            : (layer.type === 'force' ? L('Force window — drag to move, drag an edge to trim when the fields act')
+                : L('Visibility window — drag to move, drag an edge to trim; all selected bars move together')));
+    const bar = h('div', { cls: 'tl-bar ' + layer.type, tip: barTip, tipHead: layer.name });
     const place = function () {
         bar.style.left = xOf(layer.start) + 'px';
         bar.style.width = Math.max(6, (layer.end - layer.start) * ppsVal) + 'px';
@@ -641,15 +794,18 @@ function propRow(doc, layer, td) {
     const row = h('div', { cls: 'tl-row prop-row' });
     const gs = AFX.state.graphSel;
     const isGraphed = gs && gs.layerId === layer.id && gs.path === td.path;
-    const nameCell = h('div', { cls: 'tl-name' + (isGraphed ? ' graphed' : ''), title: L('Click to open in the graph') },
-        h('span', { cls: 'nm', text: td.label }));
+    const nameCell = h('div', {
+        cls: 'tl-name' + (isGraphed ? ' graphed' : ''), tipHead: td.label,
+        tip: td.path === 'sp.color' ? L('Animated color: move its keys here, the graph does not edit colors')
+            : L('Animated property: click to edit its keys and curves in the graph')
+    }, h('span', { cls: 'nm', text: td.label }));
     nameCell.addEventListener('click', function () {
         if (td.path === 'sp.color') return;
         TL.openGraph({ layerId: layer.id, path: td.path });
     });
     row.appendChild(nameCell);
 
-    const track = h('div', { cls: 'tl-track' });
+    const track = h('div', { cls: 'tl-track', tip: L('Double-click to add a key at that moment; drag the keys to move them') });
     track.addEventListener('dblclick', function (e) {
         const r = track.getBoundingClientRect();
         const tl = snapKey(tOf(e.clientX - r.left) - layer.start);
@@ -679,7 +835,9 @@ function keyEl(doc, layer, td, key) {
     const el = h('div', { cls: 'tl-key' + (isSelKey(key) ? ' sel' : '') + ((key.o && key.o.m) === 'hold' ? ' hold' : '') });
     const place = function () { el.style.left = xOf(layer.start + key.t) + 'px'; };
     place();
-    el.title = td.label + ' = ' + (Array.isArray(key.v) ? AFX.rgbToHex(key.v) : (Math.round(key.v * 100) / 100)) + ' @ ' + key.t.toFixed(3) + L('s') + ' [' + T.easeLabel(key) + ']';
+    // шапка — данные ключа, текст — что с ним можно делать
+    D.tip(el, L('Drag to move (selected keys move together), Shift+click adds to selection, right-click — easing'),
+        td.label + ' = ' + (Array.isArray(key.v) ? AFX.rgbToHex(key.v) : (Math.round(key.v * 100) / 100)) + ' @ ' + key.t.toFixed(3) + L('s') + ' [' + T.easeLabel(key) + ']');
     keyElMap.set(key, { el: el, layer: layer });
 
     let bases = null, started = false;
@@ -761,8 +919,10 @@ function curveRow(doc, layer, cd) {
     const row = h('div', { cls: 'tl-row ol-row' });
     const gs = AFX.state.graphSel;
     const isGraphed = gs && gs.layerId === layer.id && gs.curve === cd.key;
-    const nameCell = h('div', { cls: 'tl-name' + (isGraphed ? ' graphed' : ''), title: L(cd.tip || 'Over-life curve (0..1). Click to edit in the graph.') },
-        h('span', { cls: 'nm', text: L(cd.label) }));
+    const nameCell = h('div', {
+        cls: 'tl-name' + (isGraphed ? ' graphed' : ''), tipHead: L(cd.label),
+        tip: cd.tip ? L(cd.tip) : L('Over-life curve (0..1). Click to edit in the graph.')
+    }, h('span', { cls: 'nm', text: L(cd.label) }));
     nameCell.addEventListener('click', function () {
         TL.openGraph({ layerId: layer.id, curve: cd.key });
     });
@@ -770,7 +930,10 @@ function curveRow(doc, layer, cd) {
 
     const track = h('div', { cls: 'tl-track' });
     const g = stripGeom();
-    const strip = h('div', { cls: 'ol-strip', style: 'left:' + g.x + 'px;width:' + g.w + 'px;', title: L(cd.tip || 'Particle life: 0 on the left, 1 on the right. Click to open the graph.') });
+    const strip = h('div', {
+        cls: 'ol-strip', style: 'left:' + g.x + 'px;width:' + g.w + 'px;',
+        tip: cd.tip ? L(cd.tip) : L('Particle life: 0 on the left, 1 on the right. Click to open the graph.')
+    });
     const cw = Math.min(1200, Math.max(60, Math.round(g.w)));
     const canvas = h('canvas', { width: cw, height: 21, style: 'width:100%;height:100%;' });
     const ctx = canvas.getContext('2d');
@@ -799,12 +962,15 @@ function curveRow(doc, layer, cd) {
 
 function gradRow(doc, layer) {
     const row = h('div', { cls: 'tl-row ol-row' });
-    row.appendChild(h('div', { cls: 'tl-name', title: L('Particle color over life (0..1). Click the strip to add a stop, right-click removes, double-click picks a color.') },
+    row.appendChild(h('div', { cls: 'tl-name', tipHead: L('Color over life'), tip: L('Particle color over life (0..1). Click the strip to add a stop, right-click removes, double-click picks a color.') },
         h('span', { cls: 'nm', text: L('Color over life') })));
 
     const track = h('div', { cls: 'tl-track' });
     const g = stripGeom();
-    const strip = h('div', { cls: 'ol-strip', style: 'left:' + g.x + 'px;width:' + g.w + 'px;' });
+    const strip = h('div', {
+        cls: 'ol-strip', style: 'left:' + g.x + 'px;width:' + g.w + 'px;',
+        tip: L('Click the strip to add a color stop at that point of the particle life')
+    });
     const cw = Math.min(1200, Math.max(60, Math.round(g.w)));
     const canvas = h('canvas', { width: cw, height: 21, style: 'width:100%;height:100%;cursor:copy;' });
     const ctx = canvas.getContext('2d');
@@ -823,7 +989,7 @@ function gradRow(doc, layer) {
     const placeStop = function (el, s) { el.style.left = (AFX.clamp(s.t, 0, 1) * 100) + '%'; };
     const stopEls = new Map();
     grad.stops.slice().forEach(s => {
-        const el = h('div', { cls: 'grad-strip-stop', title: L('Drag to move. Right-click to remove. Double-click for color.') });
+        const el = h('div', { cls: 'grad-strip-stop', tip: L('Drag to move. Right-click to remove. Double-click for color.') });
         el.style.background = AFX.rgbToHex(s.c);
         placeStop(el, s);
         stopEls.set(s, el);
@@ -924,20 +1090,22 @@ function buildGraph(doc, timeW) {
         const tracks = TL.animTracks(selLayer);
         tracks.forEach(td => {
             const isCur = gs.layerId === selLayer.id && gs.path === td.path;
-            names.appendChild(item(td.label + (td.path === 'sp.color' ? ' (' + L('color') + ')' : ''), isCur, function () {
-                if (td.path === 'sp.color') return;
+            const isColor = td.path === 'sp.color';
+            names.appendChild(D.tip(item(td.label + (isColor ? ' (' + L('color') + ')' : ''), isCur, function () {
+                if (isColor) return;
                 AFX.state.graphSel = { layerId: selLayer.id, path: td.path };
                 TL.rebuild();
-            }, td.path === 'sp.color'));
+            }, isColor), isColor ? L('Color tracks are edited in the dope sheet, not in the graph')
+                : L('Show this property in the graph to edit its keys and Bezier handles')));
         });
         if (selLayer.type === 'emitter') {
             names.appendChild(h('div', { style: 'padding:4px 8px 2px;color:#6b644f;font-size:10px;text-transform:uppercase;', text: L('Over particle life') }));
             curveDefsFor(selLayer).forEach(cd => {
                 const isCur = gs.layerId === selLayer.id && gs.curve === cd.key;
-                names.appendChild(item(L(cd.label), isCur, function () {
+                names.appendChild(D.tip(item(L(cd.label), isCur, function () {
                     AFX.state.graphSel = { layerId: selLayer.id, curve: cd.key };
                     TL.rebuild();
-                }));
+                }), L('Show this over-life curve in the graph (X axis — particle life 0..1)')));
             });
         }
         if (!tracks.length && selLayer.type !== 'emitter') {

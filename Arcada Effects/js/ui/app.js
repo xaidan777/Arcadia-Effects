@@ -518,26 +518,28 @@ AFX.saveCurrent = function () {
 
 // ---------- старт ----------
 function applyStaticTexts() {
-    const set = function (id, text, title) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        if (text != null) el.textContent = text;
-        if (title != null) el.title = title;
-    };
-    set('btn-undo', L('Undo'), L('Undo') + ' (Ctrl+Z)');
-    set('btn-redo', L('Redo'), L('Redo') + ' (Ctrl+Y)');
-    set('btn-save', L('Save'), L('Save to catalog (Ctrl+S)'));
-    set('btn-png', L('Download PNG'), L('Save the atlas as a PNG file'));
-    set('btn-seq', L('Export sequence'), L('Save the effect as a numbered PNG sequence (.zip)'));
-    set('fx-name', null, L('Effect name'));
-    set('globals-title', L('Global Settings'));
-    set('catalog-title', L('Effects Catalog'));
-    set('textures-title', L('Textures'));
-    set('inspector-title', L('Inspector'));
-    set('btn-settings', null, L('Settings'));
-    set('btn-help', null, L('Help'));
-    set('app-ver', 'v' + AFX.VERSION, L('Version') + ' ' + AFX.VERSION);
+    const text = function (id, t) { const el = document.getElementById(id); if (el) el.textContent = t; };
+    const tip = function (id, t) { const el = document.getElementById(id); if (el) AFX.Dom.tip(el, t); };
+    text('btn-undo', L('Undo'));
+    tip('btn-undo', L('Undo the last change to the effect (Ctrl+Z)'));
+    text('btn-redo', L('Redo'));
+    tip('btn-redo', L('Redo the change you just undid (Ctrl+Y or Ctrl+Shift+Z)'));
+    text('btn-save', L('Save'));
+    tip('btn-save', SAVE_TIP);
+    text('btn-png', L('Download PNG'));
+    tip('btn-png', L('Download the sprite atlas as a PNG built with the Atlas Export settings'));
+    text('btn-seq', L('Export sequence'));
+    tip('btn-seq', L('Save the effect as a numbered PNG sequence (.zip)'));
+    tip('fx-name', L('Effect name — shown in the catalog and used for saved and exported file names'));
+    text('globals-title', L('Global Settings'));
+    text('catalog-title', L('Effects Catalog'));
+    text('textures-title', L('Textures'));
+    text('inspector-title', L('Inspector'));
+    tip('btn-settings', L('Editor settings: interface language (switching it reloads the page)'));
+    tip('btn-help', L('About Arcaidia Effector: version, author and contacts'));
+    text('app-ver', 'v' + AFX.VERSION);
 }
+const SAVE_TIP = L('Save the effect to the catalog: a file in library/ with the server, otherwise localStorage (Ctrl+S)');
 
 function initSettingsButton() {
     const btn = document.getElementById('btn-settings');
@@ -549,7 +551,7 @@ function initSettingsButton() {
         content.appendChild(hEl('h4', { text: L('Settings') }));
         const row = hEl('div', { style: 'display:flex;align-items:center;gap:8px;padding:4px 0;' });
         row.appendChild(hEl('span', { style: 'color:#9a917a;font-size:12px;flex:0 0 70px;', text: L('Language') }));
-        const sel = hEl('select', { cls: 'w-select' });
+        const sel = hEl('select', { cls: 'w-select', tip: L('Interface language; the page reloads and unsaved edits stay in the session') });
         sel.appendChild(hEl('option', { value: 'en', text: 'English' }));
         sel.appendChild(hEl('option', { value: 'ru', text: 'Русский' }));
         sel.value = AFX.lang;
@@ -595,7 +597,7 @@ function openHelp() {
     });
     body.appendChild(links);
 
-    const m = AFX.Dom.modal({ title: L('Help'), body: body, acceptLabel: L('Close') });
+    const m = AFX.Dom.modal({ title: L('Help'), body: body, acceptLabel: L('Close'), acceptTip: L('Close the help window and return to the editor') });
     m.cancelBtn.style.display = 'none'; // информационное окно: одна кнопка
 }
 
@@ -666,7 +668,7 @@ function boot() {
     document.getElementById('btn-seq').addEventListener('click', function () { AFX.GlobalsPanel.openSequenceDialog(); });
     AFX.on('dirty', function () {
         saveBtn.classList.toggle('attn', !!AFX.state.dirty);
-        saveBtn.title = AFX.state.dirty ? L('Unsaved changes (Ctrl+S)') : L('Save to catalog (Ctrl+S)');
+        AFX.Dom.tip(saveBtn, AFX.state.dirty ? L('The effect has unsaved changes — save it to the catalog (Ctrl+S)') : SAVE_TIP);
     });
 
     // восстановление рабочей сессии: все эффекты с несохранёнными правками

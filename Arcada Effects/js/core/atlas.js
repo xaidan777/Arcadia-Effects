@@ -5,12 +5,80 @@
 const AFX = window.AFX;
 const Atlas = AFX.Atlas = {};
 
-// центры интервалов: t = t0 + (i + 0.5) * step (общее правило для атласа и секвенции)
-Atlas.centers = function (t0, t1, frames) {
+// ---------- ГРАНИЦЫ КАДРОВ ----------
+// Кадр занимает интервал [b[i], b[i+1]] и сэмплируется в его ЦЕНТРЕ. Внутренние
+// границы двигают голубые маркеры таймлайна, живут они в `exp.cuts` — ДОЛЯМИ 0..1
+// между t0 и t1, а не абсолютным временем: иначе правка Start/End ломала бы порядок
+// узлов. Нет cuts или длина не та (сменилось число кадров) — нарезка равномерная,
+// и тогда путь сэмплинга прежний байт в байт: старые файлы дают те же пиксели.
+Atlas.cutBounds = function (t0, t1, frames, cuts) {
+    if (!Array.isArray(cuts) || cuts.length !== frames - 1) return null;
+    const b = [t0];
+    let prev = 0;
+    for (let i = 0; i < cuts.length; i++) {
+        const u = AFX.clamp(isFinite(cuts[i]) ? cuts[i] : prev, prev, 1);  // неубывание — инвариант
+        prev = u;
+        b.push(t0 + (t1 - t0) * u);
+    }
+    b.push(t1);
+    return b;
+};
+
+// центры интервалов: при равномерной нарезке ровно t = t0 + (i + 0.5) * step
+// (общее правило для атласа и секвенции). bounds отдаются всегда — их рисует таймлайн.
+Atlas.centers = function (t0, t1, frames, cuts) {
     const stepT = Math.max(0, t1 - t0) / frames;
-    const times = [];
-    for (let i = 0; i < frames; i++) times.push(t0 + (i + 0.5) * stepT);
-    return { times: times, t0: t0, t1: t1, frames: frames, fps: stepT > 0 ? 1 / stepT : 0 };
+    const cb = Atlas.cutBounds(t0, t1, frames, cuts);
+    const times = [], bounds = cb || [];
+    if (cb) {
+        for (let i = 0; i < frames; i++) times.push((cb[i] + cb[i + 1]) / 2);
+    } else {
+        for (let i = 0; i < frames; i++) { times.push(t0 + (i + 0.5) * stepT); bounds.push(t0 + i * stepT); }
+        bounds.push(t1);
+    }
+    return { times: times, bounds: bounds, t0: t0, t1: t1, frames: frames, fps: stepT > 0 ? 1 / stepT : 0 };
+};
+
+// кадр, которому принадлежит момент t: плеебл-вьюпорт и подсветка ячейки листа
+Atlas.frameAt = function (ft, t) {
+    for (let i = ft.frames - 1; i > 0; i--) if (t >= ft.bounds[i]) return i;
+    return 0;
+};
+
+// ---------- РАЗМЕР ЯЧЕЙКИ ----------
+// Галочка exp.pixelArt переводит экспорт в режим 1:1 к сетке слоя-пикселизатора:
+// ячейка = разрешение пиксель-арта, суперсэмпл выключен, интерполяция nearest.
+// Без этого блоки пересэмплируются в произвольный размер ячейки и лесенка снова
+// становится неровной — ровно та «левая» картинка, от которой уходим.
+// Слоя-пикселизатора в документе нет — молча падаем на обычные cellW/cellH.
+Atlas.cellSize = function (doc, o) {
+    const e = o || doc.exp;
+    const grid = (e.pixelArt && AFX.Model.pixelGrid) ? AFX.Model.pixelGrid(doc) : null;
+    if (grid) return { w: grid.gw, h: grid.gh, ss: 1, smooth: false, grid: grid };
+    return {
+        w: Math.max(8, (e.cellW != null ? e.cellW : e.w) | 0),
+        h: Math.max(8, (e.cellH != null ? e.cellH : e.h) | 0),
+        ss: e.ss === 2 ? 2 : 1, smooth: true, grid: null
+    };
+};
+
+// вписать композицию в ячейку. В пиксель-арт-режиме это НЕ «вписывание», а точная
+// обратная матрица к разгону сетки в движке: каждый блок композиции ложится ровно
+// в один тексель ячейки, поэтому кадр атласа побитово равен сетке арта.
+Atlas.fitComp = function (cellCtx, comp, cell, cs) {
+    if (cs.grid) {
+        const g = cs.grid;
+        cellCtx.imageSmoothingEnabled = false;
+        cellCtx.setTransform(1 / g.bx, 0, 0, 1 / g.by, -g.ox / g.bx, -g.oy / g.by);
+        cellCtx.drawImage(comp, 0, 0);
+        cellCtx.setTransform(1, 0, 0, 1, 0, 0);
+        return;
+    }
+    const fitK = Math.min(cell.width / comp.width, cell.height / comp.height);
+    cellCtx.imageSmoothingEnabled = true;
+    cellCtx.imageSmoothingQuality = 'high';
+    cellCtx.drawImage(comp, (cell.width - comp.width * fitK) / 2, (cell.height - comp.height * fitK) / 2,
+        comp.width * fitK, comp.height * fitK);
 };
 
 Atlas.frameTimes = function (doc) {
@@ -18,15 +86,15 @@ Atlas.frameTimes = function (doc) {
     const t0 = Math.max(0, e.t0 || 0);
     const t1 = (e.t1 == null || e.t1 < 0) ? doc.comp.dur : Math.min(doc.comp.dur, e.t1);
     const frames = Math.max(1, Math.min(e.frames | 0 || 1, (e.cols | 0) * (e.rows | 0)));
-    return Atlas.centers(t0, t1, frames);
+    return Atlas.centers(t0, t1, frames, e.cuts);
 };
 
 // построить атлас; возвращает {canvas, info}
 Atlas.build = function (doc) {
     const e = doc.exp;
     const cols = Math.max(1, e.cols | 0), rows = Math.max(1, e.rows | 0);
-    const cw = Math.max(8, e.cellW | 0), chh = Math.max(8, e.cellH | 0);
-    const ss = e.ss === 2 ? 2 : 1;
+    const cs = Atlas.cellSize(doc);
+    const cw = cs.w, chh = cs.h, ss = cs.ss;
     const ft = Atlas.frameTimes(doc);
 
     const eng = new AFX.Engine();
@@ -49,7 +117,6 @@ Atlas.build = function (doc) {
         ctx.fillRect(0, 0, atlas.width, atlas.height);
     }
 
-    const fitK = Math.min(cell.width / comp.width, cell.height / comp.height);
     for (let i = 0; i < ft.times.length; i++) {
         eng.render(doc, ft.times[i], compCtx);
         cellCtx.clearRect(0, 0, cell.width, cell.height);
@@ -57,11 +124,12 @@ Atlas.build = function (doc) {
             cellCtx.fillStyle = '#000';
             cellCtx.fillRect(0, 0, cell.width, cell.height);
         }
-        cellCtx.imageSmoothingQuality = 'high';
-        cellCtx.drawImage(comp, (cell.width - comp.width * fitK) / 2, (cell.height - comp.height * fitK) / 2,
-            comp.width * fitK, comp.height * fitK);
+        Atlas.fitComp(cellCtx, comp, cell, cs);
         if (e.mode === 'mask') maskify(cellCtx, cell.width, cell.height, e.thr || 0);
         const cxI = (i % cols) * cw, cyI = Math.floor(i / cols) * chh;
+        // ss=1 в пиксель-арт-режиме, так что ячейка ложится в лист один к одному;
+        // сглаживание всё равно гасим — оно не должно замылить кромку блока
+        ctx.imageSmoothingEnabled = cs.smooth;
         ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(cell, cxI, cyI, cw, chh);
     }
@@ -73,7 +141,7 @@ Atlas.build = function (doc) {
             cols: cols, rows: rows,
             frames: ft.frames, fps: Math.round(ft.fps * 100) / 100,
             duration: Math.round((ft.t1 - ft.t0) * 1000) / 1000,
-            mode: e.mode
+            mode: e.mode, pixelArt: !!cs.grid
         }
     };
 };
@@ -106,13 +174,15 @@ Atlas.downloadPNG = function (doc, canvas) {
 // cb: {progress(done, total), done(files, info), error(e)}; возвращает {cancel()}.
 Atlas.buildSequence = function (doc, o, cb) {
     const frames = Math.max(1, Math.min(o.frames | 0 || 1, 4096));
-    const w = Math.max(8, o.w | 0), hh = Math.max(8, o.h | 0);
-    const ss = o.ss === 2 ? 2 : 1;
+    const cs = Atlas.cellSize(doc, o);
+    const w = cs.w, hh = cs.h, ss = cs.ss;
     const mode = o.mode || 'rgba';
     const dur = doc.comp.dur;
     const t0 = AFX.clamp(o.t0 || 0, 0, dur);
     const t1 = AFX.clamp((o.t1 == null || o.t1 < 0) ? dur : o.t1, t0, dur);
-    const ft = Atlas.centers(t0, t1, frames);
+    // нарезка кадров общая с атласом (cuts применяются, только если кадров столько же):
+    // кадр N секвенции обязан совпадать с ячейкой N листа при равных настройках
+    const ft = Atlas.centers(t0, t1, frames, doc.exp.cuts);
     const prefix = AFX.safeFileName(o.prefix || doc.name);
     const pad = Math.max(4, String(frames - 1).length);
 
@@ -129,7 +199,6 @@ Atlas.buildSequence = function (doc, o, cb) {
     const out = ss === 1 ? cell : document.createElement('canvas');
     const outCtx = ss === 1 ? cellCtx : (function () { out.width = w; out.height = hh; return out.getContext('2d'); })();
 
-    const fitK = Math.min(cell.width / comp.width, cell.height / comp.height);
     const files = [];
     let i = 0, cancelled = false;
 
@@ -137,13 +206,12 @@ Atlas.buildSequence = function (doc, o, cb) {
         eng.render(doc, t, compCtx);
         cellCtx.clearRect(0, 0, cell.width, cell.height);
         if (mode === 'black') { cellCtx.fillStyle = '#000'; cellCtx.fillRect(0, 0, cell.width, cell.height); }
-        cellCtx.imageSmoothingQuality = 'high';
-        cellCtx.drawImage(comp, (cell.width - comp.width * fitK) / 2, (cell.height - comp.height * fitK) / 2,
-            comp.width * fitK, comp.height * fitK);
+        Atlas.fitComp(cellCtx, comp, cell, cs);
         if (mode === 'mask') maskify(cellCtx, cell.width, cell.height, o.thr || 0);
         if (out !== cell) {
             outCtx.clearRect(0, 0, w, hh);
             if (mode === 'black' || mode === 'mask') { outCtx.fillStyle = '#000'; outCtx.fillRect(0, 0, w, hh); }
+            outCtx.imageSmoothingEnabled = cs.smooth;
             outCtx.imageSmoothingQuality = 'high';
             outCtx.drawImage(cell, 0, 0, w, hh);
         }
@@ -167,7 +235,7 @@ Atlas.buildSequence = function (doc, o, cb) {
                         frameWidth: w, frameHeight: hh, frames: frames,
                         fps: Math.round(ft.fps * 100) / 100,
                         duration: Math.round((ft.t1 - ft.t0) * 1000) / 1000,
-                        mode: mode, prefix: prefix, pad: pad
+                        mode: mode, prefix: prefix, pad: pad, pixelArt: !!cs.grid
                     });
                 } else setTimeout(step, 0);
             }, function (e) { cb.error && cb.error(e); });
@@ -184,7 +252,7 @@ Atlas.seqMetaJSON = function (doc, info, pad) {
         pattern: info.prefix + '_%0' + (pad || 4) + 'd.png',
         frameWidth: info.frameWidth, frameHeight: info.frameHeight,
         frames: info.frames, fps: info.fps, duration: info.duration,
-        mode: info.mode, compression: doc.cam.comp
+        mode: info.mode, pixelArt: !!info.pixelArt, compression: doc.cam.comp
     }, null, 2);
 };
 
@@ -194,7 +262,7 @@ Atlas.metaJSON = function (doc, info) {
         frameWidth: info.frameWidth, frameHeight: info.frameHeight,
         cols: info.cols, rows: info.rows, frames: info.frames,
         fps: info.fps, duration: info.duration,
-        compression: doc.cam.comp
+        pixelArt: !!info.pixelArt, compression: doc.cam.comp
     }, null, 2);
 };
 })();

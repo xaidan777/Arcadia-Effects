@@ -13,11 +13,13 @@ function snapLocal(layer) {
 }
 function frameEps() { return 0.51 / (AFX.state.doc.comp.fps || 60); }
 
+// o.tip — подсказка на ВСЮ строку (лейбл + поле), шапка подсказки — полное имя
+// параметра: узкий лейбл обрезается. Любой новый виджет инспектора обязан её иметь.
 W.row = function (label, tip) {
     const lab = h('div', { cls: 'w-label', text: label });
-    if (tip) lab.title = tip;
     const body = h('div', { cls: 'w-body' });
     const row = h('div', { cls: 'w-row' }, lab, body);
+    if (tip) D.tip(row, tip, label);
     row._body = body;
     return row;
 };
@@ -113,7 +115,7 @@ W.num = function (o) {
     // секундомер и ромб ключа
     let swBtn = null, keyBtn = null;
     if (tr) {
-        swBtn = h('span', { cls: 'stopwatch', title: L('Animate parameter') }, D.icon('clock'));
+        swBtn = h('span', { cls: 'stopwatch', tip: L('Stopwatch: animate with keyframes; click again to drop the keys and keep the current value') }, D.icon('clock'));
         swBtn.addEventListener('click', function () {
             AFX.pushUndo();
             const cur = tr.obj[tr.key];
@@ -122,7 +124,7 @@ W.num = function (o) {
             AFX.commitEnd();
             refresh();
         });
-        keyBtn = h('span', { cls: 'keybtn', title: L('Key at current time') }, D.icon('key'));
+        keyBtn = h('span', { cls: 'keybtn', tip: L('Add a keyframe at the current time, or remove the one already there') }, D.icon('key'));
         keyBtn.addEventListener('click', function () {
             const cur = tr.obj[tr.key];
             if (!T.isAnim(cur)) return;
@@ -216,7 +218,7 @@ W.colorTrack = function (o) {
     });
     inp.addEventListener('change', function () { undoPushed = false; AFX.commitEnd(); });
 
-    const swBtn = h('span', { cls: 'stopwatch', title: L('Animate color') }, D.icon('clock'));
+    const swBtn = h('span', { cls: 'stopwatch', tip: L('Stopwatch: animate with keyframes; click again to drop the keys and keep the current value') }, D.icon('clock'));
     swBtn.addEventListener('click', function () {
         AFX.pushUndo();
         const cur = tr.obj[tr.key];
@@ -236,7 +238,7 @@ W.colorTrack = function (o) {
 // o: {label, curve(), layerId, yMax}
 W.curve = function (o) {
     const wrap = h('div', { cls: 'curve-wrap' });
-    wrap.appendChild(h('div', { cls: 'w-label', text: o.label, style: 'flex:none;margin-bottom:2px;', title: o.tip || '' }));
+    wrap.appendChild(h('div', { cls: 'w-label', text: o.label, style: 'flex:none;margin-bottom:2px;', tip: o.tip, tipHead: o.label }));
     const CW = 226, CH = 74, PAD = 6;
     const yMax = o.yMax || 1.5;
     const canvas = h('canvas', { cls: 'curve-canvas', width: CW, height: CH, style: 'width:' + CW + 'px;height:' + CH + 'px;' });
@@ -325,11 +327,11 @@ W.curve = function (o) {
         AFX.commitEnd();
         draw();
     });
-    canvas.title = L('Drag a point to move it. Double-click to add or remove.');
+    D.tip(canvas, L('Drag a point to move it. Double-click to add or remove.'));
 
     // пресеты
     const foot = h('div', { cls: 'widget-foot' });
-    const sel = h('select', { cls: 'w-select', style: 'flex:1;' });
+    const sel = h('select', { cls: 'w-select', style: 'flex:1;', tip: L('Replace the curve with a ready-made shape (fade out, grow, pulse…)') });
     sel.appendChild(h('option', { value: '', text: L('Curve preset...') }));
     Object.keys(AFX.Curve.presets).forEach(k => sel.appendChild(h('option', { value: k, text: L(AFX.Curve.presets[k].label) })));
     sel.addEventListener('change', function () {
@@ -352,7 +354,7 @@ W.curve = function (o) {
 // --- редактор градиента ---
 W.grad = function (o) {
     const wrap = h('div', { cls: 'grad-wrap' });
-    wrap.appendChild(h('div', { cls: 'w-label', text: o.label, style: 'flex:none;margin-bottom:2px;' }));
+    wrap.appendChild(h('div', { cls: 'w-label', text: o.label, style: 'flex:none;margin-bottom:2px;', tip: o.tip, tipHead: o.label }));
     const GW = 226, GH = 16;
     const canvas = h('canvas', { cls: 'grad-canvas', width: GW, height: GH, style: 'width:' + GW + 'px;height:' + GH + 'px;' });
     const stopsBar = h('div', { cls: 'grad-stops', style: 'width:' + GW + 'px;' });
@@ -361,9 +363,9 @@ W.grad = function (o) {
     const ctx = canvas.getContext('2d');
     let selStop = null;
 
-    const colorInp = h('input', { type: 'color', cls: 'w-color' });
+    const colorInp = h('input', { type: 'color', cls: 'w-color', tip: L('Color of the selected stop (click a stop under the strip first)') });
     const foot = h('div', { cls: 'widget-foot' });
-    const sel = h('select', { cls: 'w-select', style: 'flex:1;' });
+    const sel = h('select', { cls: 'w-select', style: 'flex:1;', tip: L('Replace the gradient with a ready-made palette (fire, smoke, ice…)') });
     sel.appendChild(h('option', { value: '', text: L('Gradient preset...') }));
     Object.keys(AFX.Grad.presets).forEach(k => sel.appendChild(h('option', { value: k, text: L(AFX.Grad.presets[k].label) })));
     foot.appendChild(colorInp);
@@ -378,7 +380,7 @@ W.grad = function (o) {
         ctx.fillRect(0, 0, GW, GH);
         stopsBar.innerHTML = '';
         g.stops.forEach(s => {
-            const el = h('div', { cls: 'grad-stop' + (s === selStop ? ' sel' : '') });
+            const el = h('div', { cls: 'grad-stop' + (s === selStop ? ' sel' : ''), tip: L('Click to pick for coloring, drag to move, right-click to remove the stop') });
             el.style.left = (s.t * GW) + 'px';
             el.style.background = AFX.rgbToHex(s.c);
             let moved = false;
@@ -426,7 +428,7 @@ W.grad = function (o) {
         AFX.commitEnd();
         selectStop(s);
     });
-    canvas.title = L('Click to add a stop. Right-click a stop to remove it.');
+    D.tip(canvas, L('Click to add a stop. Right-click a stop to remove it.'));
     let undoPushed = false;
     colorInp.addEventListener('input', function () {
         if (!selStop) return;
@@ -453,9 +455,9 @@ W.grad = function (o) {
 };
 
 // --- выбор спрайта ---
-// o: {label, layerId, get, set, texOnly} — texOnly: только текстуры (ATLAS-слой)
+// o: {label, tip, layerId, get, set, texOnly} — texOnly: только текстуры (ATLAS-слой)
 W.sprite = function (o) {
-    const row = W.row(o.label);
+    const row = W.row(o.label, o.tip);
     const btn = h('div', { cls: 'sprite-btn' });
     const refreshBtn = function () {
         btn.innerHTML = '';
@@ -483,7 +485,8 @@ function openPicker(x, y, o, refreshBtn) {
         if (!def) return;
         (def.params || []).forEach(pd => {
             paramBox.appendChild(W.num({
-                label: L(pd.label), min: pd.min, max: pd.max, step: pd.step, int: pd.step >= 1,
+                label: L(pd.label), tip: pd.tip && L(pd.tip),
+                min: pd.min, max: pd.max, step: pd.step, int: pd.step >= 1,
                 prec: pd.step >= 1 ? 0 : 2,
                 get: () => (ref.p && ref.p[pd.k] != null) ? ref.p[pd.k] : pd.def,
                 set: v => {
@@ -500,6 +503,7 @@ function openPicker(x, y, o, refreshBtn) {
             for (let i = 0; i < def.variants; i++) opts.push([String(i), L('Variant') + ' ' + (i + 1)]);
             paramBox.appendChild(W.sel({
                 label: L('Variant'),
+                tip: L('A fixed shape variant, or Random to give each particle its own'),
                 options: opts,
                 get: () => String((ref.p && ref.p.var != null) ? ref.p.var : -1),
                 set: v => {
@@ -516,7 +520,7 @@ function openPicker(x, y, o, refreshBtn) {
     const curRef = o.get();
     if (!o.texOnly) content.appendChild(h('h4', { text: L('Shapes') }));
     if (!o.texOnly) AFX.Sprites.shapeDefs.forEach(def => {
-        const cell = h('div', { cls: 'sprite-cell' + (curRef.kind === 'shape' && curRef.id === def.id ? ' sel' : ''), title: L(def.label) });
+        const cell = h('div', { cls: 'sprite-cell' + (curRef.kind === 'shape' && curRef.id === def.id ? ' sel' : ''), tip: def.tip && L(def.tip), tipHead: L(def.label) });
         cell.appendChild(AFX.Sprites.preview({ kind: 'shape', id: def.id, p: {} }, 40));
         cell.appendChild(h('div', { cls: 'cap', text: L(def.label) }));
         cell.addEventListener('click', function () {
@@ -539,7 +543,7 @@ function openPicker(x, y, o, refreshBtn) {
     let anyTex = false;
     AFX.Sprites.texs.forEach(tex => {
         anyTex = true;
-        const cell = h('div', { cls: 'sprite-cell' + (curRef.kind === 'tex' && curRef.texId === tex.id ? ' sel' : ''), title: tex.name });
+        const cell = h('div', { cls: 'sprite-cell' + (curRef.kind === 'tex' && curRef.texId === tex.id ? ' sel' : ''), tip: L('Use this imported texture as the image'), tipHead: tex.name });
         const img = h('img', { src: tex.dataURL, style: 'max-width:40px;max-height:40px;object-fit:contain;' });
         cell.appendChild(img);
         cell.appendChild(h('div', { cls: 'cap', text: tex.name }));
@@ -559,7 +563,7 @@ function openPicker(x, y, o, refreshBtn) {
     if (!anyTex) texGrid.appendChild(h('div', { style: 'color:#6b644f;font-size:11px;grid-column:1/-1;', text: L('No textures yet. Import them in the Textures panel.') }));
     content.appendChild(texGrid);
     if (o.texOnly) {
-        const imp = h('button', { cls: 'tb', style: 'margin-top:6px;width:100%;', text: L('Import sheet...') });
+        const imp = h('button', { cls: 'tb', style: 'margin-top:6px;width:100%;', text: L('Import sheet...'), tip: L('Import a new sprite sheet from disk and set its grid') });
         imp.addEventListener('click', function () {
             D.closePopover();
             AFX.TexturesPanel.pickAtlasFile(function (id) {
@@ -580,7 +584,7 @@ function openPicker(x, y, o, refreshBtn) {
 // --- таблица вспышек (bursts) ---
 W.bursts = function (o) {
     const wrap = h('div');
-    wrap.appendChild(h('div', { cls: 'bursts-head' },
+    wrap.appendChild(h('div', { cls: 'bursts-head', tip: L('One-shot bursts: at the given second the emitter releases that many particles at once') },
         h('span', { text: L('Emission bursts: time (s) / count') })));
     const table = h('div', { cls: 'bursts-table' });
     wrap.appendChild(table);
@@ -590,9 +594,9 @@ W.bursts = function (o) {
         const list = o.get();
         list.forEach((b, idx) => {
             const rowEl = h('div', { cls: 'bursts-row' });
-            rowEl.appendChild(numCell(b, 't', 0.01, 2, 0));
-            rowEl.appendChild(numCell(b, 'n', 1, 0, 0));
-            const del = h('span', { cls: 'mini-btn', title: L('Delete burst') }, D.icon('del'));
+            rowEl.appendChild(D.tip(numCell(b, 't', 0.01, 2, 0), L('Burst time in seconds from the layer start; drag or double-click to type')));
+            rowEl.appendChild(D.tip(numCell(b, 'n', 1, 0, 0), L('How many particles this burst releases; drag or double-click to type')));
+            const del = h('span', { cls: 'mini-btn', tip: L('Remove this burst from the emitter') }, D.icon('del'));
             del.addEventListener('click', function () {
                 AFX.pushUndo();
                 list.splice(idx, 1);
@@ -603,7 +607,7 @@ W.bursts = function (o) {
             rowEl.appendChild(del);
             table.appendChild(rowEl);
         });
-        const add = h('button', { cls: 'mini-btn', style: 'margin:2px 0;' }, D.icon('plus'), L('Burst'));
+        const add = h('button', { cls: 'mini-btn', style: 'margin:2px 0;', tip: L('Add a burst of 10 particles 0.1 s after the last one') }, D.icon('plus'), L('Burst'));
         add.addEventListener('click', function () {
             AFX.pushUndo();
             const list2 = o.get();
@@ -642,6 +646,73 @@ W.bursts = function (o) {
             field.textContent = fmt(obj[key], prec);
         });
         return field;
+    };
+    rebuild();
+    return wrap;
+};
+
+// --- АДРЕСАЦИЯ СЛОЯ-КОРРЕКТОРА (postfx / force) ---
+// Пустой список = «все подходящие слои ниже» — ровно то, что корректор делал всегда.
+// Кандидаты берутся только НИЖЕ по стеку: корректор не тянется вверх, а перестановка
+// слоя выше просто выводит его из-под эффекта (id в списке при этом не чистим — вернули
+// слой обратно, и адресация ожила). o: {layer, kinds:[типы слоёв], tip}
+W.targets = function (o) {
+    const layer = o.layer;
+    const wrap = h('div', { cls: 'targets' });
+    const sum = h('div', { cls: 'targets-sum' });
+    const list = h('div', { cls: 'targets-list' });
+    const badges = (AFX.Timeline && AFX.Timeline.TYPE_BADGE) || {};
+    if (o.tip) D.tip(sum, o.tip);
+    wrap.appendChild(sum);
+    wrap.appendChild(list);
+
+    const rebuild = function () {
+        list.innerHTML = '';
+        const doc = AFX.state.doc;
+        const idx = doc.layers.findIndex(l => l.id === layer.id);
+        const sel = Array.isArray(layer.targets) ? layer.targets : (layer.targets = []);
+        const cands = doc.layers.filter((l, i) => i > idx && (!o.kinds || o.kinds.indexOf(l.type) >= 0));
+        const okIds = new Set(cands.map(l => l.id));
+        const lost = sel.filter(id => !okIds.has(id)).length;
+        sum.textContent = sel.length
+            ? L('Selected layers') + ': ' + (sel.length - lost) + (lost ? ' (+' + lost + ' ' + L('out of reach') + ')' : '')
+            : (cands.length ? L('All layers below') : L('Nothing below to affect'));
+        sum.classList.toggle('on', sel.length > 0);
+
+        cands.forEach(l => {
+            const inp = h('input', { type: 'checkbox' });
+            inp.checked = sel.indexOf(l.id) >= 0;
+            inp.addEventListener('change', function () {
+                AFX.pushUndo();
+                const was = sel.length > 0;
+                const i = sel.indexOf(l.id);
+                if (inp.checked) { if (i < 0) sel.push(l.id); }
+                else if (i >= 0) sel.splice(i, 1);
+                AFX.touch(layer.id);
+                AFX.commitEnd();
+                // переход «пусто <-> есть адресаты» меняет набор виджетов секции
+                if (o.onToggleEmpty && was !== (sel.length > 0)) o.onToggleEmpty();
+                else rebuild();
+            });
+            list.appendChild(h('label', {
+                cls: 'targets-row', tipHead: l.name,
+                tip: L('Include this layer; with nothing checked, every matching layer below is affected')
+            }, inp,
+                h('span', { cls: 'type-badge sm ' + l.type, text: badges[l.type] || 'S' }),
+                h('span', { cls: 'targets-name', text: l.name })));
+        });
+        if (!cands.length) list.appendChild(h('div', { cls: 'targets-none', text: L('Move the layer above the ones it should affect') }));
+        if (sel.length) {
+            const clr = h('button', { cls: 'mini-btn', style: 'margin:4px 0;', tip: L('Clear the checks: the layer works on every matching layer below again') }, D.icon('del'), L('Affect all below'));
+            clr.addEventListener('click', function () {
+                AFX.pushUndo();
+                sel.length = 0;
+                AFX.touch(layer.id);
+                AFX.commitEnd();
+                if (o.onToggleEmpty) o.onToggleEmpty(); else rebuild();
+            });
+            list.appendChild(clr);
+        }
     };
     rebuild();
     return wrap;

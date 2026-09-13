@@ -16,18 +16,18 @@ Cat.init = function () {
     bodyEl = document.getElementById('catalog-body');
     const btns = document.getElementById('catalog-btns');
 
-    const bNew = h('span', { cls: 'mini-btn', title: L('New empty effect (current edits stay in the session)') }, D.icon('plus'), L('New'));
+    const bNew = h('span', { cls: 'mini-btn', tip: L('New empty effect (current edits stay in the session)') }, D.icon('plus'), L('New'));
     bNew.addEventListener('click', function () {
         AFX.openDoc(AFX.Model.newDoc());
     });
-    const bImp = h('span', { cls: 'mini-btn', title: L('Import an effect from JSON') }, L('Import'));
+    const bImp = h('span', { cls: 'mini-btn', tip: L('Open an effect from a .json file (you can also drop the file into the window)') }, L('Import'));
     const fileInp = h('input', { type: 'file', accept: '.json', style: 'display:none;' });
     bImp.addEventListener('click', function () { fileInp.click(); });
     fileInp.addEventListener('change', function () {
         if (fileInp.files[0]) Cat.importJsonFile(fileInp.files[0]);
         fileInp.value = '';
     });
-    const bExp = h('span', { cls: 'mini-btn', title: L('Export the current effect to JSON') }, L('Export'));
+    const bExp = h('span', { cls: 'mini-btn', tip: L('Download the current effect as a .json file with its textures embedded') }, L('Export'));
     bExp.addEventListener('click', function () {
         const file = AFX.Model.effectFile(AFX.state.doc);
         AFX.downloadText(AFX.safeFileName(AFX.state.doc.name) + '.json', JSON.stringify(file));
@@ -108,7 +108,10 @@ function liveThumb(id) {
 }
 
 function draftRow(d) {
-    const row = h('div', { cls: 'cat-row' + (isCurrent(d.id) ? ' current' : '') });
+    const row = h('div', {
+        cls: 'cat-row' + (isCurrent(d.id) ? ' current' : ''), tipHead: d.name,
+        tip: L('Unsaved draft that lives only in the session: Save puts it into the catalog')
+    });
     row.appendChild(liveThumb(d.id));
     row.appendChild(nameSpan(d.name, d.id, L('not saved')));
     const discard = function () {
@@ -117,7 +120,7 @@ function draftRow(d) {
         Cat.rebuild();
     };
     if (!d.current) {
-        const del = h('span', { cls: 'mini-btn del', title: L('Remove from session') }, D.icon('del'));
+        const del = h('span', { cls: 'mini-btn del', tip: L('Discard this unsaved draft from the session — its edits are lost') }, D.icon('del'));
         del.addEventListener('click', function (e) {
             e.stopPropagation();
             discard();
@@ -161,7 +164,7 @@ function nameSpan(name, id, sub) {
     const nm = h('span', { cls: 'cname' });
     const line = h('span', { style: 'display:flex;align-items:center;gap:5px;' });
     if (id != null && AFX.wsDirty(id)) {
-        line.appendChild(h('span', { cls: 'dirty-dot', title: L('Unsaved edits (kept in the session)') }));
+        line.appendChild(h('span', { cls: 'dirty-dot', tip: L('Unsaved edits (kept in the session)') }));
     }
     line.appendChild(h('span', { text: name }));
     nm.appendChild(line);
@@ -178,7 +181,10 @@ function isCurrent(id, name) {
 
 function factoryRow(p) {
     const fid = 'factory:' + p.id;
-    const row = h('div', { cls: 'cat-row' + (isCurrent(fid) ? ' current' : '') });
+    const row = h('div', {
+        cls: 'cat-row' + (isCurrent(fid) ? ' current' : ''), tipHead: p.name,
+        tip: L('Factory preset: click to open a working copy, right-click to reset your edits')
+    });
     row.appendChild(thumbCanvas('factory:' + p.id, () => p.build(), p.thumbT));
     row.appendChild(nameSpan(p.name, fid, L('factory preset')));
     const open = function (fresh) {
@@ -200,7 +206,10 @@ function factoryRow(p) {
 
 function userRow(item) {
     const itemId = item.id || (item.data && item.data.doc && item.data.doc.id) || null;
-    const row = h('div', { cls: 'cat-row' + (isCurrent(itemId, item.name) ? ' current' : '') });
+    const row = h('div', {
+        cls: 'cat-row' + (isCurrent(itemId, item.name) ? ' current' : ''), tipHead: item.name,
+        tip: L('Saved effect: click to open it, right-click to reset your edits or delete it')
+    });
     if (item.thumb) {
         row.appendChild(h('img', { src: item.thumb }));
     } else {
@@ -208,7 +217,7 @@ function userRow(item) {
     }
     row.appendChild(nameSpan(item.name, itemId));
 
-    const del = h('span', { cls: 'mini-btn del', title: L('Delete from catalog') }, D.icon('del'));
+    const del = h('span', { cls: 'mini-btn del', tip: L('Delete this saved effect from the catalog; with the server its file is removed too') }, D.icon('del'));
     del.addEventListener('click', function (e) {
         e.stopPropagation();
         removeItem(item);

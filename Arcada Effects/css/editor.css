@@ -19,6 +19,7 @@
     --key-sel: #21fcfe;
     --lw: 292px;
     --rw: 312px;
+    --apw: 300px;
     --tlh: 252px;
     --left-top: 55%;
     --right-top: 38%;
@@ -217,6 +218,16 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .bursts-head { color: var(--text-faint); font-size: 11px; display: flex; gap: 6px; padding: 0 10px; }
 .bursts-head span { flex: 1; }
 
+/* адресаты слоя-корректора (postfx / силовое поле) */
+.targets { padding: 0 10px 2px; }
+.targets-sum { color: var(--text-faint); font-size: 11px; margin: 2px 0 4px; }
+.targets-sum.on { color: var(--accent); }
+.targets-list { max-height: 168px; overflow-y: auto; }
+.targets-row { display: flex; gap: 6px; align-items: center; margin: 2px 0; cursor: pointer; font-size: 11px; }
+.targets-row:hover { color: var(--accent); }
+.targets-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.targets-none { color: var(--text-faint); font-size: 11px; padding: 2px 0; }
+
 /* ---------- слои ---------- */
 .layer-row {
     display: flex; align-items: center; gap: 6px; padding: 4px 8px;
@@ -237,6 +248,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .type-badge.sprite { background: #1e3a39; color: var(--accent); }
 .type-badge.atlas { background: #43301e; color: var(--orange); }
 .type-badge.postfx { background: #322043; color: #c78bff; }
+.type-badge.force { background: #16342a; color: #7fe0a8; letter-spacing: -0.5px; }
 .layer-row .lname { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .layer-row .lname input { width: 100%; background: var(--bg3); border: 1px solid var(--accent-dim); border-radius: 3px; outline: none; padding: 1px 4px; }
 .layer-row.off .lname { color: var(--text-faint); }
@@ -277,11 +289,54 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .tab-btn.on { color: var(--accent); border-bottom-color: var(--accent); }
 .pt-sep { width: 1px; height: 18px; background: var(--line2); }
 .pt-info { margin-left: auto; color: var(--text-faint); font-size: 11px; white-space: nowrap; display: flex; gap: 12px; }
-#preview-area { flex: 1 1 auto; position: relative; overflow: hidden; min-height: 0; }
+#preview-area { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; overflow: hidden; }
+#preview-view { flex: 1 1 auto; position: relative; overflow: hidden; min-height: 0; min-width: 0; }
 #view-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 #preview-hud {
     position: absolute; left: 10px; bottom: 8px; color: var(--text-faint);
     font-size: 11px; pointer-events: none; text-shadow: 0 1px 2px #000;
+}
+
+/* плеебл-вьюпорт вкладки атласа: кадры готового листа в заданном fps.
+   Ширина — своя CSS-переменная, её двигает сплиттер data-split="ap". */
+#atlas-play {
+    flex: 0 0 var(--apw); display: flex; flex-direction: column; min-height: 0; min-width: 0;
+    background: var(--bg1); border-left: 1px solid var(--line);
+}
+#atlas-play .ap-title {
+    flex: 0 0 auto; padding: 6px 10px;
+    font-size: 11px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--accent-soft); background: var(--bg2); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+}
+#atlas-play .ap-title .ap-zoom {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--text-faint); font-weight: 400; letter-spacing: 0; text-transform: none;
+}
+/* сцена — такой же вьюпорт, как превью: канва на всю площадь, зум/пан рисованием */
+#atlas-play .ap-stage { flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden; }
+#atlas-play canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#atlas-play .ap-ctl {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+    padding: 6px 8px; border-top: 1px solid var(--line);
+}
+#atlas-play .ap-frame {
+    font-family: Consolas, monospace; font-size: 12px; color: var(--accent);
+    background: var(--bg0); border: 1px solid var(--line); border-radius: 4px;
+    padding: 2px 8px; white-space: nowrap;
+}
+#atlas-play .ap-frame span { color: var(--text-faint); }
+#atlas-play .ap-fps {
+    width: 46px; text-align: right; background: var(--bg0); border: 1px solid var(--line);
+    border-radius: 4px; padding: 2px 6px; outline: none;
+    font-family: Consolas, monospace; font-size: 12px; color: var(--text);
+}
+#atlas-play .ap-fps:focus { border-color: var(--accent-dim); }
+#atlas-play .ap-fps.auto { color: var(--text-dim); }
+#atlas-play .ap-unit { color: var(--text-faint); font-size: 11px; margin-left: -2px; }
+#atlas-play .ap-info {
+    flex: 0 0 auto; padding: 0 10px 8px; color: var(--text-faint); font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 /* ---------- таймлайн ---------- */
@@ -335,6 +390,23 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 #tl-ruler { position: relative; height: 24px; border-bottom: 1px solid var(--line); cursor: pointer; }
 #tl-ruler canvas { position: absolute; left: 0; top: 0; }
 
+/* маркеры кадров атласа (только на вкладке Atlas): границы ячеек листа на линейке.
+   Залитый флажок = начало кадра, полый = конец диапазона (exp.t1). */
+.tl-fm { position: absolute; top: 1px; width: 15px; height: 17px; margin-left: -7.5px; z-index: 24; cursor: ew-resize; }
+.tl-fm svg { position: absolute; left: 1.5px; top: 0; width: 12px; height: 16px; overflow: visible; }
+.tl-fm path { fill: var(--accent); stroke: #12100b; stroke-width: 1; }
+.tl-fm.end path { fill: rgba(89,227,226,0.15); stroke: var(--accent); }
+.tl-fm:hover path, .tl-fm.drag path { fill: var(--key-sel); stroke: #0aa; }
+.tl-fm.drag { z-index: 25; }
+.tl-fm .fm-tip {
+    position: absolute; left: 50%; top: 19px; transform: translateX(-50%);
+    display: none; padding: 2px 7px; border-radius: 4px; white-space: nowrap;
+    background: rgba(18,16,11,0.96); border: 1px solid var(--accent-dim);
+    color: var(--text); font-size: 11px; font-family: Consolas, monospace; pointer-events: none;
+}
+.tl-fm:hover .fm-tip, .tl-fm.drag .fm-tip { display: block; }
+.tl-fm .fm-tip i { font-style: normal; color: var(--text-faint); margin-left: 6px; }
+
 .tl-row { display: grid; grid-template-columns: 210px 1fr; height: 24px; }
 .tl-row .tl-name {
     position: sticky; left: 0; z-index: 10; background: var(--bg1); border-right: 1px solid var(--line);
@@ -359,6 +431,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .tl-bar.emitter { background: linear-gradient(180deg, #5a4527, #43331d); border-color: #77592f; }
 .tl-bar.atlas { background: linear-gradient(180deg, #64432b, #4a3120); border-color: #8a5a34; }
 .tl-bar.postfx { background: linear-gradient(180deg, #4a3563, #35254a); border-color: #6b4d92; }
+.tl-bar.force { background: linear-gradient(180deg, #1e4a3a, #143327); border-color: #2f7a5c; }
 .tl-bar:hover { filter: brightness(1.2); }
 .tl-bar .bh { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
 .tl-bar .bh.l { left: -2px; } .tl-bar .bh.r { right: -2px; }
@@ -394,6 +467,19 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .ctx-item .mark { color: var(--accent); }
 .ctx-item.danger:hover { background: #5c2020; }
 .ctx-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+
+/* подсказка при наведении (dom.js: D.tip / атрибут data-tip). Выше модалок:
+   у их полей и кнопок подсказки тоже есть. Мышь не перехватывает. */
+.afx-tip {
+    position: fixed; left: 0; top: 0; z-index: 900; pointer-events: none;
+    max-width: 290px; padding: 5px 9px 6px; border-radius: 6px;
+    background: rgba(26,23,18,0.97); border: 1px solid var(--line2);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.55);
+    color: var(--text); font-size: 12px; line-height: 1.38; white-space: normal;
+    opacity: 0; visibility: hidden; transition: opacity 0.1s;
+}
+.afx-tip.on { opacity: 1; visibility: visible; }
+.afx-tip b { display: block; margin-bottom: 2px; color: var(--gold); font-weight: 600; }
 
 /* глобальные настройки: строки покомпактнее */
 .g-section { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
@@ -531,6 +617,7 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
 .tl-row.dragover-bot .tl-name::after { bottom: -1px; }
 .tl-row .tl-name { position: relative; }
 
+.type-badge.sm.force { font-size: 8px; }
 .type-badge.sm { flex: 0 0 15px; width: 15px; height: 15px; font-size: 9px; border-radius: 3px;
     display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
 
@@ -561,3 +648,18 @@ input, select, button, textarea { font-family: inherit; font-size: inherit; colo
     border-color: var(--orange); color: var(--gold);
     box-shadow: 0 0 7px rgba(230,131,82,0.35);
 }
+
+/* пиксель-арт: читалка сетки в инспекторе + строка палитры */
+.px-info {
+    padding: 1px 10px 5px 124px; font-size: 11px; color: var(--text-dim);
+    font-family: Consolas, monospace; letter-spacing: 0.2px;
+}
+.px-info.warn { color: var(--orange); }
+.px-swatches {
+    display: flex; flex-wrap: wrap; gap: 2px; padding: 2px 10px 6px 124px;
+}
+.px-swatches i {
+    width: 13px; height: 13px; border-radius: 2px;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.45);
+}
+.seq-inp:disabled { opacity: 0.4; }

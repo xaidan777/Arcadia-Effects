@@ -13,7 +13,7 @@ TP.init = function () {
     bodyEl = document.getElementById('textures-body');
     const btns = document.getElementById('textures-btns');
 
-    const imp = h('span', { cls: 'mini-btn', title: L('Import images (or drop files into the window)') }, D.icon('plus'), L('Import'));
+    const imp = h('span', { cls: 'mini-btn', tip: L('Import images (or drop files into the window)') }, D.icon('plus'), L('Import'));
     const fileInp = h('input', { type: 'file', accept: 'image/*', multiple: 'multiple', style: 'display:none;' });
     imp.addEventListener('click', function () { fileInp.click(); });
     fileInp.addEventListener('change', function () {
@@ -23,7 +23,7 @@ TP.init = function () {
     btns.appendChild(imp);
     btns.appendChild(fileInp);
 
-    const atl = h('span', { cls: 'mini-btn', title: L('Add a sprite atlas: the grid is guessed from the aspect ratio and confirmed in a dialog') }, D.icon('grid'), L('Atlas'));
+    const atl = h('span', { cls: 'mini-btn', tip: L('Add a sprite atlas: the grid is guessed from the aspect ratio and confirmed in a dialog') }, D.icon('grid'), L('Atlas'));
     atl.addEventListener('click', function () { TP.openAtlasPicker({ title: L('Add sprite atlas') }); });
     btns.appendChild(atl);
 
@@ -48,14 +48,17 @@ TP.rebuild = function () {
 function texRow(doc, meta) {
     const rec = AFX.Sprites.texs.get(meta.id);
     const wrap = h('div');
-    const row = h('div', { cls: 'tex-row draggable' });
+    const row = h('div', {
+        cls: 'tex-row draggable', tipHead: meta.name,
+        tip: L('Drag into the preview or onto the timeline to create a layer with this texture')
+    });
     row.draggable = true;
     row.addEventListener('dragstart', function (e) {
         e.dataTransfer.setData('text/afx-tex', meta.id);
         e.dataTransfer.effectAllowed = 'copy';
     });
 
-    row.appendChild(h('img', { src: rec ? rec.dataURL : '', title: meta.name }));
+    row.appendChild(h('img', { src: rec ? rec.dataURL : '' }));
     const nm = h('span', { cls: 'tname' });
     nm.appendChild(h('span', { text: meta.name }));
     nm.appendChild(h('span', {
@@ -64,7 +67,10 @@ function texRow(doc, meta) {
     }));
     row.appendChild(nm);
 
-    const sheetBtn = h('span', { cls: 'mini-btn' + (meta.sheet ? ' on' : ''), title: L('Mark as footage atlas: grid and fps'), text: L('Grid') });
+    const sheetBtn = h('span', {
+        cls: 'mini-btn' + (meta.sheet ? ' on' : ''), text: L('Grid'),
+        tip: L('Footage atlas: set the grid and fps of this sheet; click again to clear the mark')
+    });
     sheetBtn.addEventListener('click', function () {
         if (meta.sheet) {                       // снять пометку футажа
             AFX.pushUndo();
@@ -77,7 +83,7 @@ function texRow(doc, meta) {
     });
     row.appendChild(sheetBtn);
 
-    const del = h('span', { cls: 'mini-btn', title: L('Delete texture') }, D.icon('del'));
+    const del = h('span', { cls: 'mini-btn', tip: L('Remove the texture from the effect; layers that use it will draw nothing') }, D.icon('del'));
     del.addEventListener('click', function () {
         AFX.pushUndo();
         doc.textures = doc.textures.filter(t => t.id !== meta.id);
@@ -121,9 +127,9 @@ function texRow(doc, meta) {
             return f;
         };
         wrap.appendChild(h('div', { cls: 'tex-sheet' },
-            h('span', { text: L('cols') }), mk('cols', L('Columns'), MAXG),
-            h('span', { text: L('rows') }), mk('rows', L('Rows'), MAXG),
-            h('span', { text: 'fps' }), mk('fps', 'FPS', 120)));
+            h('span', { text: L('cols') }), D.tip(mk('cols', L('Columns'), MAXG), L('Columns of frames in the footage grid; drag or double-click to type')),
+            h('span', { text: L('rows') }), D.tip(mk('rows', L('Rows'), MAXG), L('Rows of frames in the footage grid; drag or double-click to type')),
+            h('span', { text: 'fps' }), D.tip(mk('fps', 'FPS', 120), L('Native frame rate of the sheet: a new atlas layer lasts frames ÷ fps seconds'))));
     }
     return wrap;
 }
@@ -249,7 +255,7 @@ function buildGridEditor(img, sheet) {
         const chipRow = h('div', { cls: 'sheet-chips' });
         chipRow.appendChild(h('span', { cls: 'sheet-hint', text: L('Square cells:') }));
         fam.forEach(g => {
-            const el = h('span', { cls: 'mini-btn', text: g.cols + '×' + g.rows });
+            const el = h('span', { cls: 'mini-btn', text: g.cols + '×' + g.rows, tip: L('A grid of square cells that divides the sheet without a remainder') });
             el.addEventListener('click', function () { sheet.cols = g.cols; sheet.rows = g.rows; refresh(); });
             chipRow.appendChild(el);
             chips.push({ el: el, g: g });
@@ -277,9 +283,9 @@ function buildGridEditor(img, sheet) {
     };
     const inpCols = mkInp('cols', MAXG), inpRows = mkInp('rows', MAXG), inpFps = mkInp('fps', 120);
     body.appendChild(h('div', { cls: 'sheet-fields' },
-        h('label', {}, h('span', { text: L('Columns') }), inpCols),
-        h('label', {}, h('span', { text: L('Rows') }), inpRows),
-        h('label', {}, h('span', { text: 'FPS' }), inpFps)));
+        h('label', { tip: L('How many columns of frames the sheet holds') }, h('span', { text: L('Columns') }), inpCols),
+        h('label', { tip: L('How many rows of frames the sheet holds') }, h('span', { text: L('Rows') }), inpRows),
+        h('label', { tip: L('Native frame rate of the sheet: a new atlas layer lasts frames ÷ fps seconds') }, h('span', { text: 'FPS' }), inpFps)));
 
     function setVal(inp, v) { if (document.activeElement !== inp) inp.value = String(v); }
     function refresh() {
@@ -319,6 +325,8 @@ TP.openSheetDialog = function (opts) {
     return D.modal({
         title: opts.title || L('Atlas grid'), body: body, wide: true,
         acceptLabel: L('Accept'), cancelLabel: L('Cancel'),
+        acceptTip: L('Apply this grid: frames are cut from the sheet by columns and rows'),
+        cancelTip: L('Close the dialog without changing anything'),
         onAccept: function () { opts.accept && opts.accept({ cols: sheet.cols, rows: sheet.rows, fps: sheet.fps }); },
         onCancel: function () { opts.cancel && opts.cancel(); }
     });
@@ -337,7 +345,7 @@ TP.openAtlasPicker = function (opts) {
     // --- источник: файл ---
     const drop = h('div', { cls: 'atlas-drop' });
     const dropLabel = h('div', { cls: 'atlas-drop-label', text: L('Drop a sprite sheet here') });
-    const fileBtn = h('button', { cls: 'tb accent', text: L('Choose file...') });
+    const fileBtn = h('button', { cls: 'tb accent', text: L('Choose file...'), tip: L('Pick a sprite sheet image on disk; you can also drop it onto this box') });
     const fileInp = h('input', { type: 'file', accept: 'image/*', style: 'display:none;' });
     fileBtn.addEventListener('click', function () { fileInp.click(); });
     fileInp.addEventListener('change', function () {
@@ -367,7 +375,7 @@ TP.openAtlasPicker = function (opts) {
         strip.appendChild(h('span', { cls: 'sheet-hint', text: L('or take one from the project:') }));
         inProject.forEach(meta => {
             const rec = AFX.Sprites.texs.get(meta.id);
-            const cell = h('div', { cls: 'atlas-cell', title: meta.name },
+            const cell = h('div', { cls: 'atlas-cell', tipHead: meta.name, tip: L('Use this project texture as the sheet and set its grid below') },
                 h('img', { src: rec.dataURL }),
                 h('div', { cls: 'cap', text: meta.name }));
             cell.addEventListener('click', function () {
@@ -421,6 +429,8 @@ TP.openAtlasPicker = function (opts) {
     dlg = D.modal({
         title: opts.title || L('Sprite atlas'), body: body, wide: true,
         acceptLabel: L('Accept'), cancelLabel: L('Cancel'),
+        acceptTip: L('Use the chosen sheet with this grid'),
+        cancelTip: L('Close the dialog without changing anything'),
         onAccept: function () {
             if (!src) return false;                       // источник не выбран — не закрывать
             const out = { cols: sheet.cols, rows: sheet.rows, fps: sheet.fps };

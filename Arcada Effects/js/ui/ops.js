@@ -137,8 +137,6 @@ Ops.addTextureLayer = function (texId, opts) {
         layer.blend = 'normal';
         layer.sp.sprite = { kind: 'tex', texId: texId };
         layer.sp.size = Math.min(300, Math.max(tex.img.width, tex.img.height));
-        layer.sp.scale = 1;
-        layer.opacity = 1;
     }
     if (opts.x != null) layer.sp.x = Math.round(opts.x);
     if (opts.y != null) layer.sp.y = Math.round(opts.y);

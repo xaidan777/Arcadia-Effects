@@ -39,15 +39,18 @@ const STEPS = 24; // узлов времени на слой
 for (const rel of files) {
     const raw = JSON.parse(fs.readFileSync(path.resolve(ROOT, rel), 'utf8'));
     const doc = AFX.Model.migrate(raw.doc || raw);
+    // силовые поля учитываются так же, как их читает движок
+    const fidx = AFX.Model.forceIndex(doc);
     const out = [];
     doc.layers.forEach((l, li) => {
         if (l.type !== 'emitter') return;
         const sim = new AFX.Sim(l);
+        const fc = fidx ? fidx.get(l.id) : null;
         const dur = Math.max(0.05, (l.end - l.start) + (l.pt.life || 1) * 1.6);
         let h = 2166136261;
         let total = 0;
         for (let s = 1; s <= STEPS; s++) {
-            sim.ensure(l, dur * s / STEPS);
+            sim.ensure(l, dur * s / STEPS, fc);
             h = mix(h, sim.parts.length);
             total += sim.parts.length;
             for (const p of sim.parts) {

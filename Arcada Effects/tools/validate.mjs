@@ -24,7 +24,7 @@ const M = AFX.Model, T = AFX.Track;
 
 // ---------- справочники схемы ----------
 const ENUMS = {
-    'layer.type': ['emitter', 'sprite', 'atlas', 'postfx'],
+    'layer.type': ['emitter', 'sprite', 'atlas', 'postfx', 'force'],
     'layer.blend': ['normal', 'add', 'screen', 'multiply'],
     'em.shape': ['point', 'circle', 'ring', 'box', 'line'],
     'em.dir': ['out', 'in', 'omni', 'dir'],
@@ -35,9 +35,14 @@ const ENUMS = {
     'pt.turbMode': ['noise', 'curl'],
     'sub.emit': ['life', 'death', 'both'],
     'sub.dir': ['omni', 'inherit', 'back', 'out'],
-    'fx.effect': ['mblur', 'displace'],
+    'fx.effect': ['mblur', 'displace', 'pixelate'],
     'fx.mode': ['directional', 'radial'],
     'fx.field': ['swirl', 'tear'],
+    'fx.pxSample': ['box', 'point', 'peak'],
+    'fx.pxAlpha': ['soft', 'steps', 'cut'],
+    'fx.pxColor': ['none', 'levels', 'palette', 'ramp'],
+    'fx.pxOutMode': ['outer', 'inner'],
+    'ff.mode': ['collapse', 'expand', 'drive'],
     'exp.mode': ['rgba', 'black', 'mask'],
     'keyMode': ['lin', 'ease', 'hold', 'cust']
 };
@@ -49,7 +54,8 @@ const TRACKABLE = {
     sub: ['rate', 'speed'],
     path: ['jitter', 'attract', 'lock', 'flow'],
     sp: ['x', 'y', 'scale', 'rot', 'glow', 'color'],
-    fx: ['length', 'angle', 'spin', 'x', 'y', 'amount', 'y0']
+    fx: ['length', 'angle', 'spin', 'x', 'y', 'amount', 'y0', 'pxThr'],
+    ff: ['strength', 'x', 'y', 'sx', 'sy']   // одно силовое поле (слой 'force')
 };
 // статические числовые поля блока частицы (треки здесь не поддерживаются)
 const PT_STATIC = ['life', 'lifeRnd', 'sizeRnd', 'rot', 'rotRnd', 'spin', 'spinRnd', 'stretch', 'drag', 'turbFreq', 'zigzag', 'squash', 'glow', 'glowSize', 'glowBlur', 'trailCore', 'fps',
@@ -57,7 +63,10 @@ const PT_STATIC = ['life', 'lifeRnd', 'sizeRnd', 'rot', 'rotRnd', 'spin', 'spinR
 const COLOR_TRACKS = new Set(['sp.color']);
 const WRAPPER_KEYS = new Set(['app', 'v', 'doc', 'tex', 'thumb']);
 const FX_STATIC = ['scale', 'aspect', 'oct', 'evo', 'rise', 'ramp', 'soft', 'seed']; // displace: статика
+const FX_PX_STATIC = ['pxW', 'pxAspect', 'pxOffX', 'pxOffY', 'pxGain', 'pxALev', 'pxLev',
+    'pxRampN', 'pxSat', 'pxCon', 'pxDither', 'pxDitherAmt', 'pxOut'];  // pixelate: статика
 const FX_SAMPLES = [2, 4, 8, 16, 32, 64]; // engine.js: сэмплы смаза — степень двойки
+const FX_DITHER = [0, 2, 4, 8];           // engine.js: размер матрицы Байера
 const MAX_PARTS = 5000; // sim.js: жёсткий кап частиц на слой
 
 // ---------- отчёт ----------
@@ -154,15 +163,19 @@ function checkUnknownKeys(r, doc) {
     scanObj('doc', doc, docT);
     for (const sub of ['comp', 'cam', 'exp']) scanObj('doc.' + sub, doc[sub], docT[sub]);
     (doc.textures || []).forEach((t, i) => scanObj(`textures[${i}]`, t, { id: 1, name: 1, sheet: 1 }));
-    const emT = M.newEmitter(docT), spT = M.newSprite(docT), atT = M.newAtlas(docT), fxT = M.newPostFx(docT);
+    const emT = M.newEmitter(docT), spT = M.newSprite(docT), atT = M.newAtlas(docT), fxT = M.newPostFx(docT), ffT = M.newForce(docT);
     (doc.layers || []).forEach((l, i) => {
         if (!isPlainObj(l)) { err(r, `layers[${i}]: not an object`); return; }
         const type = ENUMS['layer.type'].includes(l.type) ? l.type : (l.type == null && l.sp ? 'sprite' : 'emitter');
-        const lt = type === 'emitter' ? emT : (type === 'atlas' ? atT : (type === 'postfx' ? fxT : spT));
+        const lt = type === 'emitter' ? emT : (type === 'atlas' ? atT : (type === 'postfx' ? fxT : (type === 'force' ? ffT : spT)));
         const at = `layers[${i}]"${l.name || ''}"`;
         scanObj(at, l, lt);
         if (type === 'postfx') {
             scanObj(at + '.fx', l.fx, fxT.fx);
+        } else if (type === 'force') {
+            scanObj(at + '.ff', l.ff, ffT.ff);
+            const fT = M.newForceField();
+            if (l.ff && Array.isArray(l.ff.fields)) l.ff.fields.forEach((f, q) => scanObj(`${at}.ff.fields[${q}]`, f, fT));
         } else if (type === 'emitter') {
             scanObj(at + '.em', l.em, emT.em);
             if (l.em) scanObj(at + '.em.branch', l.em.branch, emT.em.branch);
@@ -171,13 +184,29 @@ function checkUnknownKeys(r, doc) {
             scanObj(at + '.pt', l.pt, emT.pt);
         } else {
             scanObj(at + '.sp', l.sp, lt.sp);
-            // фабричные дефолты СПРАЙТА анимированы — неявное появление/затухание (у atlas — статика)
-            if (type === 'sprite') {
-                if (l.opacity == null) warn(r, `${at}: no explicit opacity — factory default is an animated fade-out`);
-                if (l.sp && l.sp.scale == null) warn(r, `${at}: no explicit sp.scale — factory default is an animated scale-up`);
-            }
         }
     });
+}
+
+// exp.cuts — ручная нарезка кадров атласа (внутренние границы, доли 0..1 между
+// t0 и t1, длина frames-1). Чужая длина или дырявые значения не ломают экспорт:
+// атлас молча падает на равномерную нарезку — но в файле это мусор, о нём и пишем.
+function checkCuts(r, doc, cells) {
+    const c = doc.exp.cuts;
+    if (c == null) return;
+    if (!Array.isArray(c)) { err(r, `exp.cuts: must be an array of frames-1 fractions or null`); return; }
+    const frames = Math.max(1, Math.min((doc.exp.frames | 0) || 1, cells));
+    if (c.length !== frames - 1) {
+        warn(r, `exp.cuts: ${c.length} values for ${frames} frames (need ${frames - 1}) — the atlas falls back to even frames`);
+        return;
+    }
+    let prev = 0;
+    for (let i = 0; i < c.length; i++) {
+        if (!isNum(c[i]) || c[i] < 0 || c[i] > 1) { err(r, `exp.cuts[${i}]=${c[i]}: must be a number in 0..1`); return; }
+        if (c[i] < prev) { warn(r, `exp.cuts[${i}]=${c[i]} < previous ${prev}: the atlas clamps cuts to non-decreasing order`); return; }
+        prev = c[i];
+    }
+    info(r, `exp.cuts: ${frames} frames sampled unevenly`);
 }
 
 // ---------- проверки после migrate/hydrate ----------
@@ -185,9 +214,17 @@ function checkDoc(r, doc, wrapper) {
     if (!isNum(doc.comp.dur) || doc.comp.dur <= 0) err(r, `comp.dur=${doc.comp.dur}: must be > 0`);
     if (!isNum(doc.comp.w) || !isNum(doc.comp.h) || doc.comp.w < 8 || doc.comp.h < 8) err(r, `comp ${doc.comp.w}x${doc.comp.h}: bad size`);
     if (!ENUMS['exp.mode'].includes(doc.exp.mode)) err(r, `exp.mode="${doc.exp.mode}": ${ENUMS['exp.mode'].join('|')}`);
+    if (doc.exp.pixelArt) {
+        const g = M.pixelGrid(doc);
+        if (!g) warn(r, 'exp.pixelArt is on, but no enabled pixelate layer — the atlas falls back to cellW/cellH');
+        else if (g.gw !== (doc.exp.cellW | 0) || g.gh !== (doc.exp.cellH | 0)) {
+            info(r, `exp.pixelArt: cell is taken from the pixelate grid ${g.gw}x${g.gh}, cellW/cellH ignored`);
+        }
+    }
     const cells = (doc.exp.cols | 0) * (doc.exp.rows | 0);
     if ((doc.exp.frames | 0) > cells) warn(r, `exp.frames=${doc.exp.frames} > cols*rows=${cells}: atlas clamps to ${cells}`);
     if (isNum(doc.exp.t1) && doc.exp.t1 >= 0 && doc.exp.t1 <= doc.exp.t0) warn(r, `exp: t1=${doc.exp.t1} <= t0=${doc.exp.t0}`);
+    checkCuts(r, doc, cells);
 
     const ids = new Set();
     if (ids.has(doc.id)) err(r, `doc.id duplicate`); ids.add(doc.id);
@@ -287,7 +324,31 @@ function checkDoc(r, doc, wrapper) {
             if (!FX_SAMPLES.includes(fx.samples | 0)) err(r, `${at}.fx.samples=${fx.samples}: one of ${FX_SAMPLES.join('|')}`);
             if (typeof fx.half !== 'boolean') err(r, `${at}.fx.half: boolean expected, got ${JSON.stringify(fx.half)}`);
             FX_STATIC.forEach(k => { if (!isNum(fx[k])) err(r, `${at}.fx.${k}: static number expected (tracks not supported here), got ${JSON.stringify(fx[k])}`); });
-            if (fx.effect === 'displace') {
+            FX_PX_STATIC.forEach(k => { if (!isNum(fx[k])) err(r, `${at}.fx.${k}: static number expected (tracks not supported here), got ${JSON.stringify(fx[k])}`); });
+            if (fx.effect === 'pixelate') {
+                ['pxSample', 'pxAlpha', 'pxColor', 'pxOutMode'].forEach(k => {
+                    if (!ENUMS['fx.' + k].includes(fx[k])) err(r, `${at}.fx.${k}="${fx[k]}": ${ENUMS['fx.' + k].join('|')}`);
+                });
+                if (typeof fx.pxSnap !== 'boolean') err(r, `${at}.fx.pxSnap: boolean expected, got ${JSON.stringify(fx.pxSnap)}`);
+                if (!FX_DITHER.includes(fx.pxDither | 0)) err(r, `${at}.fx.pxDither=${fx.pxDither}: one of ${FX_DITHER.join('|')}`);
+                if (!Array.isArray(fx.pxOutCol) || fx.pxOutCol.length !== 3) err(r, `${at}.fx.pxOutCol: [r,g,b] expected`);
+                if (fx.pxColor === 'palette' && !M.PIXEL_PALETTES.some(p => p.id === fx.pxPal)) {
+                    err(r, `${at}.fx.pxPal="${fx.pxPal}": ${M.PIXEL_PALETTES.map(p => p.id).join('|')}`);
+                }
+                if (fx.pxColor === 'ramp' && !(fx.pxRamp && Array.isArray(fx.pxRamp.stops) && fx.pxRamp.stops.length)) {
+                    err(r, `${at}.fx.pxRamp: gradient {stops:[...]} expected`);
+                }
+                // ровные квадраты — главный признак честного пиксель-арта: неровный блок
+                // и есть та самая «плохая» лесенка, ради которой всё затевалось
+                const g = M.pixelGridOf(doc, fx);
+                if (Math.abs(g.bx - Math.round(g.bx)) > 1e-6 || Math.abs(g.by - Math.round(g.by)) > 1e-6) {
+                    warn(r, `${at}: block ${Math.round(g.bx * 100) / 100}x${Math.round(g.by * 100) / 100}px is not whole — blocks come out uneven; pick a resolution that divides comp ${doc.comp.w}x${doc.comp.h} (or turn on pxSnap)`);
+                }
+                if (i > 0) {
+                    const above = doc.layers.slice(0, i).filter(x => x.on && x.type !== 'postfx' && x.type !== 'force').length;
+                    if (above) warn(r, `${at}: ${above} drawable layer(s) above the pixelator are NOT pixelated — move it to the top of the stack`);
+                }
+            } else if (fx.effect === 'displace') {
                 if (!ENUMS['fx.field'].includes(fx.field)) err(r, `${at}.fx.field="${fx.field}": ${ENUMS['fx.field'].join('|')}`);
                 const constAmt = isNum(fx.amount) ? fx.amount : null;
                 if (constAmt === 0) warn(r, `${at}: displace amount is 0 — the layer does nothing`);
@@ -302,6 +363,29 @@ function checkDoc(r, doc, wrapper) {
             if (isNum(l.opacity) && l.opacity === 0) warn(r, `${at}: effect strength (opacity) is 0 — the layer does nothing`);
             const below = doc.layers.slice(i + 1).filter(x => x.on).length;
             if (!below) warn(r, `${at}: no visible layers below — a post-effect processes only what is under it`);
+            const tgIds = new Set(doc.layers.slice(i + 1).filter(x => x.type !== 'postfx' && x.type !== 'force').map(x => x.id));
+            (l.targets || []).forEach(id => { if (!tgIds.has(id)) warn(r, `${at}: target "${id}" is not a drawable layer below this one — it is ignored`); });
+        } else if (l.type === 'force') {
+            const ff = l.ff;
+            if (!Array.isArray(ff.fields)) { err(r, `${at}.ff.fields: array expected`); return; }
+            if (!ff.fields.length) warn(r, `${at}: no force fields — the layer does nothing`);
+            ff.fields.forEach((f, q) => {
+                const fat = `${at}.ff.fields[${q}]`;
+                if (!ENUMS['ff.mode'].includes(f.mode)) err(r, `${fat}.mode="${f.mode}": ${ENUMS['ff.mode'].join('|')}`);
+                TRACKABLE.ff.forEach(k => checkTrack(r, `${fat}.${k}`, f[k], false));
+                if (!isNum(f.falloff)) err(r, `${fat}.falloff: static number expected (tracks not supported here), got ${JSON.stringify(f.falloff)}`);
+                else if (f.falloff < 0) err(r, `${fat}.falloff=${f.falloff}: must be >= 0`);
+                const cs = isNum(f.strength) ? f.strength : null;
+                if (cs === 0) warn(r, `${fat}: strength is 0 — this field does nothing`);
+                [['sx', f.sx], ['sy', f.sy]].forEach(([k, v]) => {
+                    if (isNum(v) && v < 1) warn(r, `${fat}.${k}=${v}: below 1px (engine clamps) — the field never reaches a particle`);
+                });
+            });
+            if (isNum(l.opacity) && l.opacity === 0) warn(r, `${at}: master strength (opacity) is 0 — the layer does nothing`);
+            const tg = l.targets || [];
+            const belowIds = new Set(doc.layers.slice(i + 1).filter(x => x.type === 'emitter').map(x => x.id));
+            if (!belowIds.size) warn(r, `${at}: no emitter layers below — a force field only acts on emitters under it`);
+            tg.forEach(id => { if (!belowIds.has(id)) warn(r, `${at}: target "${id}" is not an emitter below this layer — it is ignored`); });
         } else {
             const sp = l.sp;
             TRACKABLE.sp.forEach(k => checkTrack(r, `${at}.sp.${k}`, sp[k], COLOR_TRACKS.has('sp.' + k)));
@@ -319,10 +403,12 @@ function checkDoc(r, doc, wrapper) {
 }
 
 // ---------- прогон симуляции ----------
-function simLayer(r, doc, l, i) {
+function simLayer(r, doc, l, i, fidx) {
     if (l.type !== 'emitter') return;
     const at = `layers[${i}]"${l.name}"${l.on ? '' : ' (off)'}`;
     const layer = JSON.parse(M.stripJson(l));
+    // силовые поля адресуются по id ИСХОДНОГО слоя (копия его сохраняет)
+    const fc = fidx ? fidx.get(layer.id) : null;
     const tlEnd = doc.comp.dur - layer.start;
     if (tlEnd <= 0) { warn(r, `${at}: layer starts after composition end — skipped sim`); return; }
     let sim;
@@ -337,7 +423,7 @@ function simLayer(r, doc, l, i) {
         const STEPS = 48;
         for (let s = 1; s <= STEPS; s++) {
             const tl = tlEnd * s / STEPS;
-            sim.ensure(layer, tl);
+            sim.ensure(layer, tl, fc);
             if (sim.parts.length > peak) { peak = sim.parts.length; peakT = tl + layer.start; }
             if (sim.subN > peakSub) peakSub = sim.subN;
         }
@@ -379,10 +465,16 @@ function validateFile(fp) {
     checkUnknownKeys(r, doc);
     try { doc = M.migrate(doc); } catch (e) { err(r, 'migrate/hydrate crashed: ' + e.message); return r; }
     checkDoc(r, doc, wrapper);
-    if (!r.errors.length) (doc.layers || []).forEach((l, i) => simLayer(r, doc, l, i));
+    // индекс силовых полей: тот же, что читает движок в браузере
+    const fidx = M.forceIndex(doc);
+    if (!r.errors.length) (doc.layers || []).forEach((l, i) => simLayer(r, doc, l, i, fidx));
 
     r.summary = `"${doc.name}" — ${(doc.layers || []).length} layers, dur ${doc.comp.dur}s, ` +
-        `atlas ${doc.exp.cols}x${doc.exp.rows}@${doc.exp.cellW}x${doc.exp.cellH} (${doc.exp.mode})`;
+        (function () {
+            const g = doc.exp.pixelArt ? M.pixelGrid(doc) : null;
+            return g ? `atlas ${doc.exp.cols}x${doc.exp.rows}@${g.gw}x${g.gh} (${doc.exp.mode}, pixel art 1:1)`
+                : `atlas ${doc.exp.cols}x${doc.exp.rows}@${doc.exp.cellW}x${doc.exp.cellH} (${doc.exp.mode})`;
+        })();
     return r;
 }
 
